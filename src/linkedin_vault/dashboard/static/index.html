@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkedIn Vault</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="header">
+  <h1>LinkedIn <span>Vault</span></h1>
+  <div id="stats-chips" class="stats-chips">
+    <span class="chip">Loading…</span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <label class="sidebar-label" for="search-input">Search</label>
+      <input type="search" id="search-input" placeholder="Search posts…" autocomplete="off">
+    </div>
+    <div class="sidebar-section">
+      <span class="sidebar-label">Status</span>
+      <div class="radio-group">
+        <label><input type="radio" name="status" value="all" checked> All</label>
+        <label><input type="radio" name="status" value="unread"> Unread</label>
+        <label><input type="radio" name="status" value="read"> Read</label>
+        <label><input type="radio" name="status" value="skipped"> Skipped</label>
+        <label><input type="radio" name="status" value="saved_later"> Saved Later</label>
+      </div>
+    </div>
+    <div class="sidebar-section">
+      <label class="sidebar-label" for="sort-select">Sort</label>
+      <select id="sort-select">
+        <option value="importance_desc">Importance ↓</option>
+        <option value="importance_asc">Importance ↑</option>
+        <option value="date_desc">Date ↓</option>
+        <option value="date_asc">Date ↑</option>
+      </select>
+    </div>
+    <div class="sidebar-section">
+      <span class="sidebar-label">Tags</span>
+      <div id="tag-cloud" class="tag-cloud"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="post-count" class="post-count"></div>
+    <div id="post-grid" class="post-grid"></div>
+    <div id="pagination" class="pagination"></div>
+  </main>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="modal-overlay hidden" onclick="onOverlayClick(event)">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()" title="Close (Esc)">&times;</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
+
+<script>
+/* ================================================================
+   LinkedIn Vault Dashboard — Vanilla JS SPA
+   ================================================================ */
+
+// ---- State ----
+const state = {
+  query: '', tag: null, status: 'all',
+  sort: 'importance_desc', page: 1, pageSize: 20
+};
+let currentPosts = [];  // In-memory post cache for modal lookup
+
+// ---- Utilities ----
+const debounce = (fn, ms) => {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+};
+
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  try {
+    return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch { return d; }
+}
+
+function tagColorIdx(tag) {
+  let h = 0;
+  for (const c of tag) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return h % 6;
+}
+
+function importanceInfo(score) {
+  if (score == null) return { cls: 'none', width: 0, label: '—' };
+  const cls = score >= 7 ? 'high' : score >= 4 ? 'mid' : 'low';
+  return { cls, width: (score / 10) * 100, label: score.toFixed(1) };
+}
+
+const STATUS_LABELS = {
+  unread: 'Unread', read: 'Read', skipped: 'Skipped', saved_later: 'Saved Later'
+};
+
+// ---- API helpers ----
+async function apiFetch(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function apiPatch(url, body) {
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function apiDelete(url) {
+  const r = await fetch(url, { method: 'DELETE' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---- Toast ----
+function showToast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => el.classList.add('toast-show'));
+  });
+  setTimeout(() => {
+    el.classList.remove('toast-show');
+    setTimeout(() => el.remove(), 280);
+  }, 3200);
+}
+
+// ---- Skeleton ----
+function skeletonHTML() {
+  const card = `<div class="post-card skeleton-card">
+    <div class="skeleton sk-title"></div>
+    <div class="skeleton sk-meta"></div>
+    <div class="skeleton sk-line"></div>
+    <div class="skeleton sk-line sk-short"></div>
+    <div class="skeleton sk-line sk-shorter"></div>
+    <div class="skeleton sk-bar"></div>
+  </div>`;
+  return Array.from({ length: 6 }, () => card).join('');
+}
+
+// ---- Card HTML ----
+function tagBadges(tags) {
+  return (tags || []).map(t =>
+    `<span class="tag tag-${tagColorIdx(t)}">${escHtml(t)}</span>`
+  ).join('');
+}
+
+function cardHTML(post) {
+  const imp = importanceInfo(post.importance_score);
+  const preview = post.content.length > 200
+    ? escHtml(post.content.slice(0, 200)) + '&hellip;'
+    : escHtml(post.content);
+
+  const impRow = post.importance_score != null
+    ? `<div class="importance-row">
+         <span class="importance-label">Score: ${imp.label}</span>
+         <div class="importance-bar">
+           <div class="importance-fill ${imp.cls}" style="width:${imp.width}%"></div>
+         </div>
+       </div>`
+    : '';
+
+  const authorEl = post.author_profile_url
+    ? `<a href="${escHtml(post.author_profile_url)}" target="_blank" class="author-link">${escHtml(post.author_name)}</a>`
+    : `<span>${escHtml(post.author_name)}</span>`;
+
+  const outdated = post.is_outdated
+    ? '<span class="badge badge-outdated">Outdated</span>'
+    : '';
+
+  const statusLabel = STATUS_LABELS[post.status] || post.status;
+
+  return `<div class="post-card" data-id="${post.id}">
+    <div class="card-header">
+      <div class="card-author">${authorEl}</div>
+      <div class="card-date">${formatDate(post.post_date || post.scraped_at)}</div>
+    </div>
+    <div class="card-body" onclick="openPostModal(${post.id})" role="button" tabindex="0"
+         aria-label="Open full post">
+      <p class="card-content">${preview}</p>
+    </div>
+    <div class="card-tags">${tagBadges(post.tags)}</div>
+    ${impRow}
+    <div class="card-footer">
+      <div class="card-badges">
+        ${outdated}
+        <span class="badge status-${post.status}" data-status-badge="${post.id}">${escHtml(statusLabel)}</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn-action" onclick="setStatus(${post.id},'read',event)" title="Mark Read">✓</button>
+        <button class="btn-action" onclick="setStatus(${post.id},'skipped',event)" title="Skip">✕</button>
+        <button class="btn-action" onclick="setStatus(${post.id},'saved_later',event)" title="Save Later">★</button>
+        <a href="${escHtml(post.url)}" target="_blank" rel="noopener"
+           class="btn-action btn-link" title="View on LinkedIn">↗</a>
+        <button class="btn-action btn-danger" onclick="doDelete(${post.id},event)" title="Delete">🗑</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---- Render helpers ----
+function renderStats(stats) {
+  document.getElementById('stats-chips').innerHTML =
+    `<span class="chip">Total: ${stats.total_posts}</span>` +
+    `<span class="chip chip-blue">Unread: ${stats.unread_posts}</span>` +
+    `<span class="chip chip-green">Enriched: ${stats.enriched_posts}</span>`;
+}
+
+function renderTags(tags) {
+  const cloud = document.getElementById('tag-cloud');
+  if (!tags.length) { cloud.innerHTML = '<span style="color:var(--text-dim);font-size:.75rem">No tags yet</span>'; return; }
+  cloud.innerHTML = tags.map(t => {
+    const active = t === state.tag ? ' tag-active' : '';
+    return `<button class="tag tag-filter tag-${tagColorIdx(t)}${active}"
+              onclick="selectTag('${escHtml(t)}')">${escHtml(t)}</button>`;
+  }).join('');
+}
+
+function renderPagination(total, page, pages) {
+  const el = document.getElementById('pagination');
+  if (pages <= 1) { el.innerHTML = ''; return; }
+  let html = '';
+  if (page > 1) html += `<button class="btn-page" onclick="goPage(${page - 1})">← Prev</button>`;
+  html += `<span class="page-info">Page ${page} of ${pages}</span>`;
+  if (page < pages) html += `<button class="btn-page" onclick="goPage(${page + 1})">Next →</button>`;
+  el.innerHTML = html;
+}
+
+function renderPosts(data) {
+  currentPosts = data.posts;
+  const grid = document.getElementById('post-grid');
+  document.getElementById('post-count').textContent =
+    data.total === 0 ? '' : `${data.total} post${data.total !== 1 ? 's' : ''}`;
+
+  if (!data.posts.length) {
+    grid.innerHTML = '<div class="empty-state">No posts match your filters.</div>';
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+  grid.innerHTML = data.posts.map(cardHTML).join('');
+  renderPagination(data.total, data.page, data.pages);
+}
+
+// ---- Data loading ----
+async function loadPosts() {
+  document.getElementById('post-grid').innerHTML = skeletonHTML();
+  document.getElementById('pagination').innerHTML = '';
+
+  const p = new URLSearchParams({ sort: state.sort, page: state.page, page_size: state.pageSize });
+  if (state.query) p.set('q', state.query);
+  if (state.tag)   p.set('tag', state.tag);
+  if (state.status !== 'all') p.set('status', state.status);
+
+  try {
+    renderPosts(await apiFetch(`/api/posts?${p}`));
+  } catch (e) {
+    document.getElementById('post-grid').innerHTML =
+      '<div class="empty-state error-state">Failed to load posts.</div>';
+    showToast('Failed to load posts: ' + e.message, 'error');
+  }
+}
+
+async function loadStats() {
+  try { renderStats(await apiFetch('/api/stats')); } catch { /* non-critical */ }
+}
+
+async function loadTags() {
+  try { renderTags((await apiFetch('/api/tags')).tags); } catch { /* non-critical */ }
+}
+
+// ---- Card actions ----
+async function setStatus(id, status, evt) {
+  evt.stopPropagation();
+  const card = document.querySelector(`.post-card[data-id="${id}"]`);
+  try {
+    await apiPatch(`/api/posts/${id}/status`, { status });
+    // Optimistic UI: update badge without re-fetching
+    const badge = card && card.querySelector(`[data-status-badge="${id}"]`);
+    if (badge) {
+      badge.className = `badge status-${status}`;
+      badge.textContent = STATUS_LABELS[status] || status;
+    }
+    // Update in-memory cache
+    const cached = currentPosts.find(p => p.id === id);
+    if (cached) cached.status = status;
+    showToast('Status updated', 'success');
+    loadStats();
+  } catch (e) {
+    showToast('Update failed: ' + e.message, 'error');
+  }
+}
+
+async function doDelete(id, evt) {
+  evt.stopPropagation();
+  if (!confirm('Remove this post from your vault?')) return;
+  const card = document.querySelector(`.post-card[data-id="${id}"]`);
+  try {
+    await apiDelete(`/api/posts/${id}`);
+    if (card) {
+      card.style.transition = 'opacity 0.2s, transform 0.2s';
+      card.style.opacity = '0';
+      card.style.transform = 'scale(0.94)';
+      setTimeout(() => card.remove(), 220);
+    }
+    currentPosts = currentPosts.filter(p => p.id !== id);
+    showToast('Post deleted', 'success');
+    loadStats();
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+function selectTag(tag) {
+  state.tag = state.tag === tag ? null : tag;
+  state.page = 1;
+  renderTags((document.getElementById('tag-cloud').querySelectorAll('.tag-filter').length
+    ? [...document.getElementById('tag-cloud').querySelectorAll('.tag-filter')].map(b => b.textContent)
+    : []));
+  loadTags();   // refresh active highlight
+  loadPosts();
+}
+
+function goPage(p) {
+  state.page = p;
+  loadPosts();
+  document.querySelector('.main').scrollTop = 0;
+}
+
+// ---- Modal ----
+function openPostModal(id) {
+  const post = currentPosts.find(p => p.id === id);
+  if (!post) return;
+  const imp = importanceInfo(post.importance_score);
+
+  const authorEl = post.author_profile_url
+    ? `<a href="${escHtml(post.author_profile_url)}" target="_blank" class="author-link modal-author">${escHtml(post.author_name)}</a>`
+    : `<span class="modal-author">${escHtml(post.author_name)}</span>`;
+
+  const impBadge = post.importance_score != null
+    ? `<span class="badge badge-importance ${imp.cls}">Score: ${imp.label}</span>`
+    : '';
+
+  const outdated = post.is_outdated
+    ? '<span class="badge badge-outdated">Outdated</span>' : '';
+
+  const summarySection = post.summary
+    ? `<div class="modal-section"><h3>Summary</h3><p>${escHtml(post.summary)}</p></div>`
+    : '';
+
+  const tagsSection = (post.tags || []).length
+    ? `<div class="modal-section"><h3>Tags</h3><div class="tag-row">${tagBadges(post.tags)}</div></div>`
+    : '';
+
+  const metaRows = [
+    post.enrichment_model ? `<dt>Model</dt><dd>${escHtml(post.enrichment_model)}</dd>` : '',
+    post.enriched_at      ? `<dt>Enriched</dt><dd>${formatDate(post.enriched_at)}</dd>` : '',
+    `<dt>Scraped</dt><dd>${formatDate(post.scraped_at)}</dd>`,
+    `<dt>LinkedIn ID</dt><dd>${escHtml(post.linkedin_id)}</dd>`,
+  ].filter(Boolean).join('');
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-header">
+      <div>${authorEl}<div class="modal-date">${formatDate(post.post_date || post.scraped_at)}</div></div>
+      <div class="modal-meta">
+        <span class="badge status-${post.status}">${escHtml(STATUS_LABELS[post.status] || post.status)}</span>
+        ${outdated}${impBadge}
+        <a href="${escHtml(post.url)}" target="_blank" rel="noopener" class="btn-sm btn-primary">LinkedIn ↗</a>
+      </div>
+    </div>
+    ${summarySection}
+    <div class="modal-section">
+      <h3>Content</h3>
+      <pre class="modal-content-text">${escHtml(post.content)}</pre>
+    </div>
+    ${tagsSection}
+    <div class="modal-section modal-metadata">
+      <h3>Metadata</h3>
+      <dl>${metaRows}</dl>
+    </div>`;
+
+  document.getElementById('modal').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+function onOverlayClick(e) {
+  if (e.target === document.getElementById('modal')) closeModal();
+}
+
+// ---- Event wiring ----
+function setupEvents() {
+  // Debounced search
+  const dSearch = debounce(v => {
+    state.query = v.trim();
+    state.page = 1;
+    loadPosts();
+  }, 300);
+  document.getElementById('search-input').addEventListener('input', e => dSearch(e.target.value));
+
+  // Status radio buttons
+  document.querySelectorAll('input[name="status"]').forEach(r =>
+    r.addEventListener('change', e => {
+      state.status = e.target.value;
+      state.page = 1;
+      loadPosts();
+    })
+  );
+
+  // Sort dropdown
+  document.getElementById('sort-select').addEventListener('change', e => {
+    state.sort = e.target.value;
+    state.page = 1;
+    loadPosts();
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeModal();
+    if (e.key === '/' && document.activeElement !== document.getElementById('search-input')) {
+      e.preventDefault();
+      document.getElementById('search-input').focus();
+    }
+  });
+
+  // Card keyboard accessibility (Enter on card-body)
+  document.getElementById('post-grid').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.classList.contains('card-body')) {
+      e.target.click();
+    }
+  });
+}
+
+// ---- Init ----
+async function init() {
+  setupEvents();
+  await Promise.all([loadStats(), loadTags(), loadPosts()]);
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

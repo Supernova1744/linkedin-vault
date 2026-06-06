@@ -3,5 +3,6 @@
   "include": ["src", "tests"],
   "venvPath": ".",
   "venv": ".venv",
-  "reportMissingModuleSource": "warning"
+  "reportMissingModuleSource": "warning",
+  "reportUnusedParameter": "none"
 }

@@ -29,6 +29,8 @@ dependencies = [
     "rich>=13.0.0",
     "aiosqlite>=0.20.0",
     "python-dotenv>=1.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
 ]
 
 [project.optional-dependencies]
@@ -46,7 +48,7 @@ linkedin-vault = "linkedin_vault.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-linkedin_vault = ["db/migrations.sql"]
+linkedin_vault = ["db/migrations.sql", "dashboard/static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -282,3 +282,89 @@ class DatabaseManager:
         async with aiosqlite.connect(self._db_path) as conn:
             await conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))
             await conn.commit()
+
+    async def get_posts_filtered(
+        self,
+        query: str | None = None,
+        tag: str | None = None,
+        status_filter: str | None = None,
+        sort: str = "date_desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[Post], int]:
+        """Return (posts, total_count) with optional FTS5 search, tag/status filtering,
+        custom sort, and pagination.
+
+        Null importance scores are always sorted last regardless of direction.
+        """
+        sort_map = {
+            "importance_desc": "(p.importance_score IS NULL), p.importance_score DESC",
+            "importance_asc": "(p.importance_score IS NULL), p.importance_score ASC",
+            "date_desc": "p.scraped_at DESC",
+            "date_asc": "p.scraped_at ASC",
+        }
+        order_by = sort_map.get(sort, "p.scraped_at DESC")
+        offset = (page - 1) * page_size
+
+        clauses: list[str] = []
+        params: list[object] = []
+        if status_filter:
+            clauses.append("p.status = ?")
+            params.append(status_filter)
+        if tag:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(p.tags) e WHERE e.value = ?)"
+            )
+            params.append(tag)
+
+        use_fts = bool(query and query.strip())
+        if use_fts:
+            assert query is not None  # narrowing for mypy
+            safe_q = f'"{query}"'
+            extra_where = (" AND " + " AND ".join(clauses)) if clauses else ""
+            count_sql = (
+                "SELECT COUNT(*) AS cnt FROM posts p "
+                "JOIN posts_fts fts ON p.id = fts.rowid "
+                f"WHERE posts_fts MATCH ?{extra_where}"
+            )
+            data_sql = (
+                "SELECT p.* FROM posts p "
+                "JOIN posts_fts fts ON p.id = fts.rowid "
+                f"WHERE posts_fts MATCH ?{extra_where} "
+                f"ORDER BY {order_by} LIMIT ? OFFSET ?"
+            )
+            count_params: list[object] = [safe_q, *params]
+            data_params: list[object] = [safe_q, *params, page_size, offset]
+        else:
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            count_sql = f"SELECT COUNT(*) AS cnt FROM posts p {where}"
+            data_sql = (
+                f"SELECT p.* FROM posts p {where} "
+                f"ORDER BY {order_by} LIMIT ? OFFSET ?"
+            )
+            count_params = [*params]
+            data_params = [*params, page_size, offset]
+
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cnt_cursor = await conn.execute(count_sql, count_params)
+            cnt_row = await cnt_cursor.fetchone()
+            total: int = dict(cnt_row)["cnt"] if cnt_row else 0
+
+            data_cursor = await conn.execute(data_sql, data_params)
+            rows = await data_cursor.fetchall()
+
+        return [_row_to_post(row) for row in rows], total
+
+    async def get_all_tags(self) -> list[str]:
+        """Return all unique tags across all enriched posts, sorted alphabetically."""
+        sql = """
+            SELECT DISTINCT e.value
+            FROM posts p, json_each(p.tags) e
+            WHERE p.tags IS NOT NULL
+            ORDER BY e.value
+        """
+        async with aiosqlite.connect(self._db_path) as conn:
+            cursor = await conn.execute(sql)
+            rows = await cursor.fetchall()
+        return [row[0] for row in rows]

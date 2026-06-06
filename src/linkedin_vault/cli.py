@@ -48,7 +48,7 @@ def scrape(
         )
 
     async def _run() -> ScrapeResult:
-        def _on_progress(new_posts: int, __: int) -> None:
+        def _on_progress(new_posts: int, _total: int) -> None:
             if new_posts == 1 or new_posts % 25 == 0:
                 console.print(f"  [dim]Saved {new_posts} new post(s) so far…[/dim]")
 
@@ -153,8 +153,18 @@ def models() -> None:
 
 @app.command()
 def dashboard() -> None:
-    """Open the web dashboard (Phase 4)."""
-    raise NotImplementedError("Dashboard is implemented in Phase 4.")
+    """Launch the web dashboard."""
+    from linkedin_vault.dashboard.server import run_dashboard
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    url = f"http://{settings.dashboard_host}:{settings.dashboard_port}"
+    console.print("[bold blue]LinkedIn Vault Dashboard[/bold blue]")
+    console.print(f"[dim]Opening at {url}[/dim]")
+    import webbrowser
+
+    webbrowser.open(url)
+    run_dashboard(settings)
 
 
 @app.command()
