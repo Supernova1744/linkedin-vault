@@ -52,3 +52,6 @@ test-results/
 
 # LinkedIn Vault data directory is user-local — never commit
 ~/.linkedin-vault/
+
+# LinkedIn browser session cookies/storage (stored in data_dir — never commit)
+session.json

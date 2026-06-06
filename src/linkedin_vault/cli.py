@@ -34,8 +34,42 @@ def tui() -> None:
 def scrape(
     headless: bool = typer.Option(False, "--headless", help="Run browser in headless mode"),
 ) -> None:
-    """Scrape LinkedIn saved posts (Phase 2)."""
-    raise NotImplementedError(f"Scraping (headless={headless}) is implemented in Phase 2.")
+    """Scrape LinkedIn saved posts and store them in the local database."""
+    from linkedin_vault.scraper.runner import ScrapeResult, run_scrape
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    db = DatabaseManager(settings.get_db_path())
+
+    console.print("[bold blue]LinkedIn Vault — Scrape[/bold blue]")
+    if not headless:
+        console.print(
+            "[dim]A browser window will open. Log in to LinkedIn if prompted.[/dim]"
+        )
+
+    async def _run() -> ScrapeResult:
+        def _on_progress(new_posts: int, _total_processed: int) -> None:
+            if new_posts == 1 or new_posts % 25 == 0:
+                console.print(f"  [dim]Saved {new_posts} new post(s) so far…[/dim]")
+
+        return await run_scrape(
+            settings=settings,
+            db=db,
+            headless=headless,
+            progress_callback=_on_progress,
+        )
+
+    with console.status("[bold green]Scraping saved posts…[/bold green]", spinner="dots"):
+        result = asyncio.run(_run())
+
+    table = Table(title="Scrape Complete", show_header=True, header_style="bold cyan")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("New posts saved", str(result.new_posts))
+    table.add_row("Already in DB (skipped)", str(result.skipped_existing))
+    table.add_row("Failed extractions", str(result.failed_extractions))
+    table.add_row("Duration", f"{result.duration_seconds:.1f}s")
+    console.print(table)
 
 
 @app.command()

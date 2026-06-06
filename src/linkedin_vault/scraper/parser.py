@@ -1,0 +1,313 @@
+"""
+LinkedIn post data extraction — pure parsing logic plus DOM extraction.
+
+DOM Selectors are defined as module-level constants here so there is exactly
+one place to update them when LinkedIn changes its markup.
+
+NOTE: LinkedIn's DOM changes frequently. If scraping breaks, update the
+      SELECTORS_* lists below before touching any other code.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.async_api import ElementHandle
+
+from linkedin_vault.db.models import Post
+
+# ---------------------------------------------------------------------------
+# DOM Selectors
+# All selectors live here.  browser.py imports what it needs from this module.
+# Each list is tried in order; the first match wins.
+# ---------------------------------------------------------------------------
+
+# Post card container — data-urn is the most stable LinkedIn attribute
+SELECTOR_POST_CONTAINER = "[data-urn*='activity']"
+
+# Author display name
+SELECTORS_AUTHOR_NAME: list[str] = [
+    ".update-components-actor__name span[aria-hidden='true']",
+    ".update-components-actor__name",
+    ".actors-name span",
+    "[data-test-id='actor-name']",
+]
+
+# Author profile href
+SELECTORS_AUTHOR_LINK: list[str] = [
+    "a.update-components-actor__container-link",
+    "a[href*='/in/'][aria-label]",
+    "a[href*='/in/']",
+]
+
+# Post body text
+SELECTORS_POST_CONTENT: list[str] = [
+    ".update-components-text .text-view-model",
+    ".update-components-text span[dir='ltr']",
+    ".update-components-text",
+    ".feed-shared-update-v2__description .break-words",
+    ".feed-shared-update-v2__description",
+    ".attributed-text-segment-list__content",
+]
+
+# Post timestamp / publication date
+SELECTORS_POST_DATE: list[str] = [
+    "time.update-components-actor__sub-description",
+    ".update-components-actor__sub-description time",
+    ".update-components-actor__sub-description span:not([aria-hidden])",
+    "time",
+]
+
+# Permalink to the post
+SELECTORS_POST_LINK: list[str] = [
+    "a[href*='/feed/update/urn:li:activity']",
+    "a[href*='activity:']",
+    "a[href*='/posts/']",
+]
+
+# ---------------------------------------------------------------------------
+# Date parsing helpers
+# ---------------------------------------------------------------------------
+
+# Matches LinkedIn relative timestamps: "2w", "3mo", "14h", "1d", "1yr"
+_RELATIVE_RE = re.compile(
+    r"^(\d+)\s*(h(?:r|rs)?|d(?:ay|ays)?|w(?:k|ks)?|mo(?:nth|nths)?|yr(?:s)?)$",
+    re.IGNORECASE,
+)
+
+_ABSOLUTE_FMTS_WITH_YEAR = ["%b %d, %Y", "%B %d, %Y", "%b. %d, %Y"]
+_ABSOLUTE_FMTS_WITHOUT_YEAR = ["%b %d", "%B %d", "%b. %d"]
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public data model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RawPost:
+    """Raw data extracted from the LinkedIn DOM before validation."""
+
+    url: str | None
+    author_name: str | None
+    author_profile_url: str | None
+    content: str | None
+    post_date_raw: str | None
+
+
+# ---------------------------------------------------------------------------
+# Pure parsing functions (no Playwright, safe to test without a browser)
+# ---------------------------------------------------------------------------
+
+
+def extract_linkedin_id(url: str) -> str | None:
+    """Extract ``urn:li:activity:XXXX`` from any LinkedIn post URL or URN string.
+
+    Returns the full URN string, e.g. ``"urn:li:activity:1234567890"``, or
+    ``None`` if no activity URN is found.
+    """
+    match = re.search(r"(urn:li:activity:\d+)", url)
+    return match.group(1) if match else None
+
+
+def parse_post_date(raw_date: str) -> str | None:
+    """Convert LinkedIn timestamp text to an ISO 8601 UTC string with ``Z`` suffix.
+
+    Handles:
+    - Relative: ``"1h"``, ``"3d"``, ``"2w"``, ``"1mo"``, ``"1yr"``
+    - Absolute with year: ``"Jan 15, 2024"``
+    - Absolute without year: ``"Jan 15"`` (assumes current calendar year)
+    - Returns ``None`` for unrecognisable input.
+    """
+    if not raw_date:
+        return None
+
+    text = raw_date.strip()
+
+    # --- Relative dates ---
+    m = _RELATIVE_RE.match(text)
+    if m:
+        amount = int(m.group(1))
+        unit = m.group(2).lower()
+        now = datetime.now(UTC)
+        if unit.startswith("h"):
+            delta = timedelta(hours=amount)
+        elif unit.startswith("d"):
+            delta = timedelta(days=amount)
+        elif unit.startswith("w"):
+            delta = timedelta(weeks=amount)
+        elif unit.startswith("mo"):
+            delta = timedelta(days=amount * 30)
+        elif unit.startswith("yr"):
+            delta = timedelta(days=amount * 365)
+        else:
+            return None
+        return (now - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # --- Absolute dates with year ---
+    for fmt in _ABSOLUTE_FMTS_WITH_YEAR:
+        try:
+            dt = datetime.strptime(text, fmt)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+
+    # --- Absolute dates without year (assume current year) ---
+    current_year = datetime.now(UTC).year
+    for fmt in _ABSOLUTE_FMTS_WITHOUT_YEAR:
+        try:
+            dt = datetime.strptime(text, fmt).replace(year=current_year)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+
+    logger.debug("parse_post_date: unrecognised format %r", text)
+    return None
+
+
+def raw_post_to_model(raw: RawPost, scraped_at: str) -> Post | None:
+    """Convert a :class:`RawPost` to a :class:`Post` model.
+
+    Returns ``None`` if any of the required fields (``url``, ``author_name``,
+    ``content``) are missing, or if a ``linkedin_id`` cannot be derived from
+    the URL.
+    """
+    if not raw.url or not raw.author_name or not raw.content:
+        return None
+
+    linkedin_id = extract_linkedin_id(raw.url)
+    if linkedin_id is None:
+        logger.debug("raw_post_to_model: cannot extract linkedin_id from URL %r", raw.url)
+        return None
+
+    post_date = parse_post_date(raw.post_date_raw) if raw.post_date_raw else None
+
+    return Post(
+        linkedin_id=linkedin_id,
+        url=raw.url,
+        author_name=raw.author_name,
+        author_profile_url=raw.author_profile_url,
+        content=raw.content,
+        post_date=post_date,
+        scraped_at=scraped_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Async DOM extraction (requires Playwright at call-time)
+# ---------------------------------------------------------------------------
+
+
+async def _try_get_text(element: ElementHandle, selectors: list[str]) -> str | None:
+    """Try each selector in order; return the inner text of the first match."""
+    for sel in selectors:
+        try:
+            handle = await element.query_selector(sel)
+            if handle:
+                text = await handle.inner_text()
+                if text and text.strip():
+                    return text.strip()
+        except Exception:
+            continue
+    return None
+
+
+async def _try_get_attr(
+    element: ElementHandle, selectors: list[str], attr: str
+) -> str | None:
+    """Try each selector in order; return the named attribute of the first match."""
+    for sel in selectors:
+        try:
+            handle = await element.query_selector(sel)
+            if handle:
+                value = await handle.get_attribute(attr)
+                if value and value.strip():
+                    return value.strip()
+        except Exception:
+            continue
+    return None
+
+
+async def extract_post_from_element(element: ElementHandle) -> RawPost:
+    """Extract raw post data from a single LinkedIn post card DOM element.
+
+    Never raises — all extraction errors are logged as warnings and the
+    corresponding field is returned as ``None``.
+    """
+    url: str | None = None
+    author_name: str | None = None
+    author_profile_url: str | None = None
+    content: str | None = None
+    post_date_raw: str | None = None
+
+    # -- Post URL / permalink --
+    try:
+        href = await _try_get_attr(element, SELECTORS_POST_LINK, "href")
+        if href:
+            url = href if href.startswith("http") else f"https://www.linkedin.com{href}"
+        else:
+            # Fall back to constructing URL from the data-urn attribute
+            urn = await element.get_attribute("data-urn")
+            if urn and "activity" in urn:
+                url = f"https://www.linkedin.com/feed/update/{urn}"
+    except Exception as exc:
+        logger.warning("Failed to extract post URL: %s", exc)
+
+    # -- Author name --
+    try:
+        author_name = await _try_get_text(element, SELECTORS_AUTHOR_NAME)
+    except Exception as exc:
+        logger.warning("Failed to extract author name: %s", exc)
+
+    # -- Author profile URL --
+    try:
+        href = await _try_get_attr(element, SELECTORS_AUTHOR_LINK, "href")
+        if href:
+            author_profile_url = (
+                href if href.startswith("http") else f"https://www.linkedin.com{href}"
+            )
+    except Exception as exc:
+        logger.warning("Failed to extract author profile URL: %s", exc)
+
+    # -- Post content --
+    try:
+        content = await _try_get_text(element, SELECTORS_POST_CONTENT)
+    except Exception as exc:
+        logger.warning("Failed to extract post content: %s", exc)
+
+    # -- Post date --
+    try:
+        # First try the datetime attribute on <time>; fall back to visible text
+        for sel in SELECTORS_POST_DATE:
+            try:
+                handle = await element.query_selector(sel)
+                if handle:
+                    # Try the HTML datetime attribute first (machine-readable)
+                    dt_attr = await handle.get_attribute("datetime")
+                    if dt_attr and dt_attr.strip():
+                        post_date_raw = dt_attr.strip()
+                        break
+                    # Fall back to visible text ("2w", "Jan 15", etc.)
+                    text = await handle.inner_text()
+                    if text and text.strip():
+                        post_date_raw = text.strip()
+                        break
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.warning("Failed to extract post date: %s", exc)
+
+    return RawPost(
+        url=url,
+        author_name=author_name,
+        author_profile_url=author_profile_url,
+        content=content,
+        post_date_raw=post_date_raw,
+    )

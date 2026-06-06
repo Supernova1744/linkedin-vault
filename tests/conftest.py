@@ -6,6 +6,7 @@ import pytest_asyncio
 from linkedin_vault.config import LLMProvider, Settings
 from linkedin_vault.db.database import DatabaseManager
 from linkedin_vault.db.models import Post
+from linkedin_vault.scraper.parser import RawPost
 
 
 @pytest.fixture
@@ -49,6 +50,17 @@ def enriched_post(sample_post: Post) -> Post:
         is_outdated=False,
         enriched_at="2024-06-01T13:00:00Z",
         enrichment_model="glm-4-flash",
+    )
+
+
+@pytest.fixture
+def sample_raw_post() -> RawPost:
+    return RawPost(
+        url="https://www.linkedin.com/feed/update/urn:li:activity:1234567890",
+        author_name="Jane Doe",
+        author_profile_url="https://www.linkedin.com/in/janedoe",
+        content="Excited to share that Python 3.12 brings major performance improvements!",
+        post_date_raw="2w",
     )
 
 
