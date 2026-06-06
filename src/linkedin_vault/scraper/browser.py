@@ -165,65 +165,101 @@ async def _perform_manual_login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
-_DIAG_SELECTORS = [
-    "[data-urn*='activity']",
-    "[data-urn*='ugcPost']",
-    "[data-urn*='savedItem']",
-    "[data-urn*='miniUpdateV2']",
-    "[data-urn*='share']",
-    ".feed-shared-update-v2",
-    ".occludable-update",
-    ".entity-result",
-    "[data-id]",
-]
+_DISCOVERY_JS = """
+() => {
+    const url = location.href;
+    const title = document.title;
 
-_DIAG_JS = """
-(selectors) => {
-    const out = {url: location.href, title: document.title, hits: {}, urnSamples: []};
-    for (const sel of selectors) {
-        const n = document.querySelectorAll(sel).length;
-        if (n) out.hits[sel] = n;
+    // --- selector probe (known candidates) ---
+    const probes = [
+        '[data-urn]', '[data-urn*="activity"]', '[data-urn*="ugcPost"]',
+        '[data-urn*="savedItem"]', '[data-urn*="miniUpdateV2"]',
+        '.feed-shared-update-v2', '.occludable-update', '.entity-result',
+        'article', 'li.artdeco-list__item', '.artdeco-list__item',
+        '.scaffold-finite-scroll__content > div',
+        '.scaffold-finite-scroll__content > ul > li',
+        '[class*="occludable"]', '[class*="feed-shared"]',
+        '[class*="update-v2"]', '[class*="relative"]',
+        'main li', 'main article', 'main > div > div',
+    ];
+    const hits = {};
+    for (const sel of probes) {
+        try {
+            const n = document.querySelectorAll(sel).length;
+            if (n > 0) hits[sel] = n;
+        } catch(_) {}
     }
-    const allUrn = Array.from(document.querySelectorAll('[data-urn]'));
-    out.urnSamples = allUrn.slice(0, 12).map(el => ({
+
+    // --- data-urn samples ---
+    const urnEls = Array.from(document.querySelectorAll('[data-urn]')).slice(0, 12);
+    const urnSamples = urnEls.map(el => ({
         tag: el.tagName,
         urn: (el.getAttribute('data-urn') || '').substring(0, 80),
-        cls: el.className.substring(0, 60)
+        cls: el.className.substring(0, 70)
     }));
-    return out;
+
+    // --- discover repeated class names (likely post-card containers) ---
+    const classCounts = {};
+    document.querySelectorAll('*').forEach(el => {
+        el.classList.forEach(c => { classCounts[c] = (classCounts[c] || 0) + 1; });
+    });
+    const repeated = Object.entries(classCounts)
+        .filter(([, n]) => n >= 2 && n <= 20)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 30)
+        .map(([cls, n]) => `${n}x .${cls}`);
+
+    // --- scaffold / main content children ---
+    const mainEl = document.querySelector(
+        '.scaffold-finite-scroll__content, main, .feed-body, #main-content'
+    );
+    const mainChildren = mainEl
+        ? Array.from(mainEl.children).slice(0, 6).map(el =>
+            `<${el.tagName.toLowerCase()} class="${el.className.substring(0, 60)}" id="${el.id}">`)
+        : [];
+
+    return { url, title, hits, urnSamples, repeated, mainChildren };
 }
 """
 
 
 async def _run_page_diagnostic(page: Page) -> dict:
-    """Run JS on the page to identify what selectors and data-urn values exist."""
+    """Run JS discovery on the page; returns empty dict on error."""
     try:
-        return await page.evaluate(_DIAG_JS, _DIAG_SELECTORS)  # type: ignore[arg-type]
+        return await page.evaluate(_DISCOVERY_JS)  # type: ignore[arg-type]
     except Exception as exc:
         _logger.debug("Page diagnostic JS failed: %s", exc)
         return {}
 
 
-async def _write_diagnostic_file(diag: dict) -> str:
-    """Write diagnostic info to ~/.linkedin-vault/debug_diagnostic.txt."""
+async def _write_diagnostic_file(diag: dict, filename: str = "debug_diagnostic.txt") -> str:
+    """Write diagnostic info to ~/.linkedin-vault/<filename>."""
     from pathlib import Path
-    path = Path.home() / ".linkedin-vault" / "debug_diagnostic.txt"
+    path = Path.home() / ".linkedin-vault" / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"URL:   {diag.get('url', '?')}",
         f"Title: {diag.get('title', '?')}",
         "",
-        "Selector hits (count > 0):",
+        "── Selector hits ──────────────────────────────────",
     ]
     hits = diag.get("hits", {})
     if hits:
         for sel, n in hits.items():
             lines.append(f"  {n:4d}  {sel}")
     else:
-        lines.append("  (none — no known selectors matched anything)")
-    lines += ["", "data-urn samples (first 12):"]
+        lines.append("  (none matched)")
+    lines += ["", "── data-urn samples ───────────────────────────────"]
     for s in diag.get("urnSamples", []):
-        lines.append(f"  <{s['tag'].lower()}> class={s['cls']!r}  urn={s['urn']!r}")
+        lines.append(f"  <{s['tag'].lower()}> cls={s['cls']!r}  urn={s['urn']!r}")
+    if not diag.get("urnSamples"):
+        lines.append("  (no [data-urn] elements on page)")
+    lines += ["", "── Repeated class names (2–20 occurrences) ────────"]
+    for r in diag.get("repeated", []):
+        lines.append(f"  {r}")
+    lines += ["", "── Main content children ──────────────────────────"]
+    for c in diag.get("mainChildren", []):
+        lines.append(f"  {c}")
     path.write_text("\n".join(lines), encoding="utf-8")
     return str(path)
 
@@ -258,19 +294,25 @@ async def scroll_and_extract_raw_posts(
         page: A Playwright :class:`Page` already pointed at the saved posts URL.
         max_no_new_scrolls: Stop after this many scrolls with no new containers.
     """
-    # Give LinkedIn's JS framework extra time to render the feed after navigation
-    await page.wait_for_timeout(3_000)
-
     _logger.info("Page URL after navigation: %s", page.url)
 
-    # Run diagnostic immediately — writes to file even if scrape succeeds,
-    # so the selector hit-counts are always available for debugging.
+    # Step 1: wait for something guaranteed to appear (nav / heading / any li),
+    # just to ensure the page's JS has run.  This is NOT our post selector.
+    _BOOT_SELECTOR = "h1, h2, header, nav, li, .artdeco-card, article"
+    try:
+        await page.wait_for_selector(_BOOT_SELECTOR, timeout=PAGE_LOAD_TIMEOUT)
+    except PlaywrightError:
+        _logger.warning("Page appears completely blank after %ds.", PAGE_LOAD_TIMEOUT // 1000)
+
+    # Step 2: extra wait for LinkedIn's lazy-render to populate the feed.
+    await page.wait_for_timeout(5_000)
+
+    # Step 3: run the discovery diagnostic on the now-loaded page.
     diag = await _run_page_diagnostic(page)
     diag_path = await _write_diagnostic_file(diag)
-    _logger.info("Page diagnostic written to %s", diag_path)
-    _logger.info("Selector hits: %s", diag.get("hits", {}))
+    _logger.info("Page diagnostic written to %s  hits=%s", diag_path, diag.get("hits", {}))
 
-    # Wait for the first post to appear (returns early if the page is empty)
+    # Step 4: wait for our post containers.
     try:
         await page.wait_for_selector(SELECTOR_POST_CONTAINER, timeout=PAGE_LOAD_TIMEOUT)
     except PlaywrightError:

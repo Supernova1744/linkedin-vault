@@ -35,7 +35,10 @@ SELECTOR_POST_CONTAINER = (
     "[data-urn*='ugcPost'],"
     "[data-urn*='miniUpdateV2'],"
     "[data-urn*='savedItem'],"
-    "[data-urn*='share']"
+    "[data-urn*='share'],"
+    ".feed-shared-update-v2,"
+    ".occludable-update,"
+    "li.artdeco-list__item"
 )
 
 # Author display name
