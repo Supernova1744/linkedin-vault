@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.Python
+
+# Distribution
+dist/
+build/
+*.tar.gz
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+
+# Ruff / Linting
+.ruff_cache/
+
+# Environment
+.env
+!.env.example
+*.env.local
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Playwright
+playwright-report/
+test-results/
+
+# LinkedIn Vault data directory is user-local — never commit
+~/.linkedin-vault/
