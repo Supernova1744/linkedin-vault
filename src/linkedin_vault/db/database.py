@@ -177,6 +177,28 @@ class DatabaseManager:
             )
             await conn.commit()
 
+    async def get_posts_for_enrichment(
+        self,
+        re_enrich: bool = False,
+        limit: int | None = None,
+    ) -> list[Post]:
+        """Return posts that need LLM enrichment.
+
+        Args:
+            re_enrich: If ``True``, return all posts (re-enrich everything).
+                       If ``False`` (default), return only posts with
+                       ``enriched_at IS NULL``.
+            limit:     Maximum number of rows to return.  ``None`` = all.
+        """
+        where = "" if re_enrich else "WHERE enriched_at IS NULL"
+        limit_clause = f"LIMIT {limit}" if limit is not None else "LIMIT -1"
+        sql = f"SELECT * FROM posts {where} ORDER BY scraped_at ASC {limit_clause}"
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(sql)
+            rows = await cursor.fetchall()
+        return [_row_to_post(row) for row in rows]
+
     async def search_posts(self, query: str, limit: int = 50) -> list[Post]:
         # Wrap in double-quotes to safely handle special FTS5 chars (C++, foo:bar, etc.)
         safe_query = f'"{query}"'

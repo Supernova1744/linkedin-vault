@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
 
+    # Enrichment
+    enrich_delay_seconds: float = 0.5  # Rate-limit pause between posts
+
     # Dashboard
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8765

@@ -48,7 +48,7 @@ def scrape(
         )
 
     async def _run() -> ScrapeResult:
-        def _on_progress(new_posts: int, _total_processed: int) -> None:
+        def _on_progress(new_posts: int, __: int) -> None:
             if new_posts == 1 or new_posts % 25 == 0:
                 console.print(f"  [dim]Saved {new_posts} new post(s) so far…[/dim]")
 
@@ -75,9 +75,80 @@ def scrape(
 @app.command()
 def enrich(
     limit: int | None = typer.Option(None, "--limit", "-n", help="Max posts to enrich"),
+    re_enrich: bool = typer.Option(
+        False, "--re-enrich", help="Re-enrich already-enriched posts"
+    ),
 ) -> None:
-    """Enrich scraped posts with LLM analysis (Phase 3)."""
-    raise NotImplementedError(f"Enrichment (limit={limit}) is implemented in Phase 3.")
+    """Enrich scraped posts with LLM analysis."""
+    from linkedin_vault.enricher.runner import EnrichmentRunResult, run_enrichment
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    db = DatabaseManager(settings.get_db_path())
+
+    if not settings.llm_model:
+        console.print(
+            "[bold red]Error:[/bold red] No LLM model configured. "
+            "Run [bold]linkedin-vault tui[/bold] to configure one."
+        )
+        raise typer.Exit(1)
+
+    console.print("[bold blue]LinkedIn Vault — Enrich[/bold blue]")
+    console.print(
+        f"[dim]Provider: {settings.llm_provider}  Model: {settings.llm_model}[/dim]"
+    )
+
+    async def _run() -> EnrichmentRunResult:
+        def _on_progress(current: int, total: int) -> None:
+            if total > 0 and (current % 5 == 0 or current == total):
+                console.print(f"  [dim]Processed {current}/{total} posts…[/dim]")
+
+        return await run_enrichment(
+            settings=settings,
+            db=db,
+            limit=limit,
+            re_enrich=re_enrich,
+            progress_callback=_on_progress,
+        )
+
+    with console.status("[bold green]Enriching posts…[/bold green]", spinner="dots"):
+        result = asyncio.run(_run())
+
+    table = Table(title="Enrichment Complete", show_header=True, header_style="bold cyan")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Posts enriched", str(result.enriched))
+    table.add_row("Already enriched (skipped)", str(result.skipped_already_enriched))
+    table.add_row("Failed", str(result.failed))
+    table.add_row("Duration", f"{result.duration_seconds:.1f}s")
+    console.print(table)
+
+
+@app.command()
+def models() -> None:
+    """List available LLM models for the configured provider."""
+    from linkedin_vault.enricher.base import LLMProviderError
+    from linkedin_vault.enricher.factory import get_provider
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+
+    async def _run() -> list[str]:
+        provider = get_provider(settings)
+        return await provider.list_models()
+
+    try:
+        model_list = asyncio.run(_run())
+    except LLMProviderError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"[bold blue]Available models ({settings.llm_provider}):[/bold blue]"
+    )
+    for m in model_list:
+        marker = " [bold yellow]*[/bold yellow]" if m == settings.llm_model else ""
+        console.print(f"  {m}{marker}")
 
 
 @app.command()
