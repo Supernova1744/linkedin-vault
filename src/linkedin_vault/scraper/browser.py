@@ -165,6 +165,69 @@ async def _perform_manual_login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
+_DIAG_SELECTORS = [
+    "[data-urn*='activity']",
+    "[data-urn*='ugcPost']",
+    "[data-urn*='savedItem']",
+    "[data-urn*='miniUpdateV2']",
+    "[data-urn*='share']",
+    ".feed-shared-update-v2",
+    ".occludable-update",
+    ".entity-result",
+    "[data-id]",
+]
+
+_DIAG_JS = """
+(selectors) => {
+    const out = {url: location.href, title: document.title, hits: {}, urnSamples: []};
+    for (const sel of selectors) {
+        const n = document.querySelectorAll(sel).length;
+        if (n) out.hits[sel] = n;
+    }
+    const allUrn = Array.from(document.querySelectorAll('[data-urn]'));
+    out.urnSamples = allUrn.slice(0, 12).map(el => ({
+        tag: el.tagName,
+        urn: (el.getAttribute('data-urn') || '').substring(0, 80),
+        cls: el.className.substring(0, 60)
+    }));
+    return out;
+}
+"""
+
+
+async def _run_page_diagnostic(page: Page) -> dict:
+    """Run JS on the page to identify what selectors and data-urn values exist."""
+    try:
+        return await page.evaluate(_DIAG_JS, _DIAG_SELECTORS)  # type: ignore[arg-type]
+    except Exception as exc:
+        _logger.debug("Page diagnostic JS failed: %s", exc)
+        return {}
+
+
+async def _write_diagnostic_file(diag: dict) -> str:
+    """Write diagnostic info to ~/.linkedin-vault/debug_diagnostic.txt."""
+    from pathlib import Path
+    path = Path.home() / ".linkedin-vault" / "debug_diagnostic.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"URL:   {diag.get('url', '?')}",
+        f"Title: {diag.get('title', '?')}",
+        "",
+        "Selector hits (count > 0):",
+    ]
+    hits = diag.get("hits", {})
+    if hits:
+        for sel, n in hits.items():
+            lines.append(f"  {n:4d}  {sel}")
+    else:
+        lines.append("  (none — no known selectors matched anything)")
+    lines += ["", "data-urn samples (first 12):"]
+    for s in diag.get("urnSamples", []):
+        lines.append(f"  <{s['tag'].lower()}> class={s['cls']!r}  urn={s['urn']!r}")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return str(path)
+
+
 async def _save_debug_screenshot(page: Page) -> str | None:
     """Save a screenshot to ~/.linkedin-vault/debug_screenshot.png and return the path."""
     try:
@@ -199,10 +262,13 @@ async def scroll_and_extract_raw_posts(
     await page.wait_for_timeout(3_000)
 
     _logger.info("Page URL after navigation: %s", page.url)
-    try:
-        _logger.info("Page title: %s", await page.title())
-    except PlaywrightError:
-        pass
+
+    # Run diagnostic immediately — writes to file even if scrape succeeds,
+    # so the selector hit-counts are always available for debugging.
+    diag = await _run_page_diagnostic(page)
+    diag_path = await _write_diagnostic_file(diag)
+    _logger.info("Page diagnostic written to %s", diag_path)
+    _logger.info("Selector hits: %s", diag.get("hits", {}))
 
     # Wait for the first post to appear (returns early if the page is empty)
     try:
@@ -210,16 +276,16 @@ async def scroll_and_extract_raw_posts(
     except PlaywrightError:
         screenshot = await _save_debug_screenshot(page)
         _logger.warning(
-            "No post containers found on saved posts page within %ds. "
-            "Current URL: %s. "
-            "The page may be empty or selectors need updating. %s",
+            "No post containers found within %ds. URL: %s. "
+            "Diagnostic: %s  Screenshot: %s",
             PAGE_LOAD_TIMEOUT // 1000,
             page.url,
-            f"Debug screenshot: {screenshot}" if screenshot else "",
+            diag_path,
+            screenshot or "n/a",
         )
         return
 
-    seen_urns: set[str] = set()
+    seen_ids: set[str] = set()
     no_new_scroll_count = 0
 
     while no_new_scroll_count < max_no_new_scrolls:
@@ -231,16 +297,23 @@ async def scroll_and_extract_raw_posts(
 
         new_in_batch = 0
         for container in containers:
+            # Build a stable dedup key: prefer data-urn, fall back to the
+            # first post-link href found inside the container.
             try:
-                urn = await container.get_attribute("data-urn")
-            except PlaywrightError as exc:
-                _logger.warning("get_attribute('data-urn') failed: %s", exc)
+                uid = await container.get_attribute("data-urn") or ""
+                if not uid:
+                    link = await container.query_selector(
+                        "a[href*='/feed/update/'], a[href*='/posts/'], a[href*='/pulse/']"
+                    )
+                    if link:
+                        uid = (await link.get_attribute("href")) or ""
+            except PlaywrightError:
                 continue
 
-            if not urn or urn in seen_urns:
+            if not uid or uid in seen_ids:
                 continue
 
-            seen_urns.add(urn)
+            seen_ids.add(uid)
             new_in_batch += 1
 
             try:
@@ -270,4 +343,4 @@ async def scroll_and_extract_raw_posts(
             _logger.warning("Scroll failed: %s", exc)
             break
 
-    _logger.info("Scroll complete. Total unique post containers seen: %d.", len(seen_urns))
+    _logger.info("Scroll complete. Total unique containers seen: %d.", len(seen_ids))

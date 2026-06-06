@@ -43,7 +43,10 @@ class ScrapeScreen(Screen):
         settings = load_settings()
         db = DatabaseManager(settings.get_db_path())
 
+        from pathlib import Path
+        diag_file = Path.home() / ".linkedin-vault" / "debug_diagnostic.txt"
         log.write("[dim]Opening browser — log in to LinkedIn if prompted.[/dim]")
+        log.write(f"[dim]Diagnostic will be written to: {diag_file}[/dim]")
         log.write("")
 
         def on_progress(new_posts: int, _total: int) -> None:

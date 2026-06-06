@@ -34,6 +34,7 @@ SELECTOR_POST_CONTAINER = (
     "[data-urn*='activity'],"
     "[data-urn*='ugcPost'],"
     "[data-urn*='miniUpdateV2'],"
+    "[data-urn*='savedItem'],"
     "[data-urn*='share']"
 )
 
