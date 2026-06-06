@@ -27,8 +27,15 @@ from linkedin_vault.db.models import Post
 # Each list is tried in order; the first match wins.
 # ---------------------------------------------------------------------------
 
-# Post card container — data-urn is the most stable LinkedIn attribute
-SELECTOR_POST_CONTAINER = "[data-urn*='activity']"
+# Post card container — LinkedIn uses several data-urn prefixes depending on
+# post type.  All variants known as of 2025 are listed here.
+# If scraping breaks, inspect the page DOM and add new data-urn patterns here.
+SELECTOR_POST_CONTAINER = (
+    "[data-urn*='activity'],"
+    "[data-urn*='ugcPost'],"
+    "[data-urn*='miniUpdateV2'],"
+    "[data-urn*='share']"
+)
 
 # Author display name
 SELECTORS_AUTHOR_NAME: list[str] = [
@@ -36,6 +43,8 @@ SELECTORS_AUTHOR_NAME: list[str] = [
     ".update-components-actor__name",
     ".actors-name span",
     "[data-test-id='actor-name']",
+    ".app-aware-link span[aria-hidden='true']",
+    ".entity-result__title-text a span[aria-hidden='true']",
 ]
 
 # Author profile href
@@ -43,6 +52,7 @@ SELECTORS_AUTHOR_LINK: list[str] = [
     "a.update-components-actor__container-link",
     "a[href*='/in/'][aria-label]",
     "a[href*='/in/']",
+    ".entity-result__title-text a",
 ]
 
 # Post body text
@@ -53,6 +63,8 @@ SELECTORS_POST_CONTENT: list[str] = [
     ".feed-shared-update-v2__description .break-words",
     ".feed-shared-update-v2__description",
     ".attributed-text-segment-list__content",
+    ".feed-shared-inline-show-more-text",
+    ".entity-result__content",
 ]
 
 # Post timestamp / publication date
@@ -60,14 +72,18 @@ SELECTORS_POST_DATE: list[str] = [
     "time.update-components-actor__sub-description",
     ".update-components-actor__sub-description time",
     ".update-components-actor__sub-description span:not([aria-hidden])",
+    "time[datetime]",
     "time",
 ]
 
 # Permalink to the post
 SELECTORS_POST_LINK: list[str] = [
     "a[href*='/feed/update/urn:li:activity']",
+    "a[href*='/feed/update/urn:li:ugcPost']",
     "a[href*='activity:']",
+    "a[href*='ugcPost:']",
     "a[href*='/posts/']",
+    "a[href*='/pulse/']",
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,12 +124,14 @@ class RawPost:
 
 
 def extract_linkedin_id(url: str) -> str | None:
-    """Extract ``urn:li:activity:XXXX`` from any LinkedIn post URL or URN string.
+    """Extract a stable LinkedIn post URN from a URL or URN string.
 
-    Returns the full URN string, e.g. ``"urn:li:activity:1234567890"``, or
-    ``None`` if no activity URN is found.
+    Handles ``urn:li:activity:XXXX``, ``urn:li:ugcPost:XXXX``, and
+    embedded URNs inside composite strings like ``urn:li:fs_miniUpdateV2``.
+
+    Returns the first matching URN string, or ``None`` if none is found.
     """
-    match = re.search(r"(urn:li:activity:\d+)", url)
+    match = re.search(r"(urn:li:(?:activity|ugcPost):\d+)", url)
     return match.group(1) if match else None
 
 

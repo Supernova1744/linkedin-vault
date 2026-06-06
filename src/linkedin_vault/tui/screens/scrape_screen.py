@@ -57,7 +57,21 @@ class ScrapeScreen(Screen):
                 progress_callback=on_progress,
             )
             log.write("")
-            log.write("[bold green]✓ Scrape complete![/bold green]")
+            if result.new_posts == 0 and result.skipped_existing == 0:
+                log.write("[bold yellow]⚠ Scrape finished with 0 posts found.[/bold yellow]")
+                log.write("")
+                log.write("Possible causes:")
+                log.write("  • LinkedIn changed their page structure (selectors need updating)")
+                log.write("  • You are not logged in / session expired")
+                log.write("  • The saved posts page is genuinely empty")
+                from pathlib import Path
+                screenshot = Path.home() / ".linkedin-vault" / "debug_screenshot.png"
+                if screenshot.exists():
+                    log.write("")
+                    log.write(f"[dim]Debug screenshot saved:[/dim] {screenshot}")
+                    log.write("[dim]Open it to see what the browser saw.[/dim]")
+            else:
+                log.write("[bold green]✓ Scrape complete![/bold green]")
             log.write(f"  New posts saved:     [bold]{result.new_posts}[/bold]")
             log.write(f"  Already in DB:       {result.skipped_existing}")
             log.write(f"  Failed extractions:  {result.failed_extractions}")

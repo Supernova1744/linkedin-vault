@@ -165,6 +165,19 @@ async def _perform_manual_login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _save_debug_screenshot(page: Page) -> str | None:
+    """Save a screenshot to ~/.linkedin-vault/debug_screenshot.png and return the path."""
+    try:
+        from pathlib import Path
+        screenshot_path = Path.home() / ".linkedin-vault" / "debug_screenshot.png"
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(screenshot_path), full_page=False)
+        return str(screenshot_path)
+    except Exception as exc:
+        _logger.debug("Could not save debug screenshot: %s", exc)
+        return None
+
+
 async def scroll_and_extract_raw_posts(
     page: Page,
     max_no_new_scrolls: int = 3,
@@ -182,14 +195,27 @@ async def scroll_and_extract_raw_posts(
         page: A Playwright :class:`Page` already pointed at the saved posts URL.
         max_no_new_scrolls: Stop after this many scrolls with no new containers.
     """
+    # Give LinkedIn's JS framework extra time to render the feed after navigation
+    await page.wait_for_timeout(3_000)
+
+    _logger.info("Page URL after navigation: %s", page.url)
+    try:
+        _logger.info("Page title: %s", await page.title())
+    except PlaywrightError:
+        pass
+
     # Wait for the first post to appear (returns early if the page is empty)
     try:
         await page.wait_for_selector(SELECTOR_POST_CONTAINER, timeout=PAGE_LOAD_TIMEOUT)
     except PlaywrightError:
+        screenshot = await _save_debug_screenshot(page)
         _logger.warning(
             "No post containers found on saved posts page within %ds. "
-            "The page may be empty or the selector needs updating.",
+            "Current URL: %s. "
+            "The page may be empty or selectors need updating. %s",
             PAGE_LOAD_TIMEOUT // 1000,
+            page.url,
+            f"Debug screenshot: {screenshot}" if screenshot else "",
         )
         return
 
