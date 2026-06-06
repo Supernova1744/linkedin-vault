@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PostResponse(BaseModel):
@@ -47,3 +47,32 @@ class UpdateStatusRequest(BaseModel):
 
 class OkResponse(BaseModel):
     ok: bool = True
+
+
+class CitationResponse(BaseModel):
+    post_id: int
+    url: str
+    author_name: str
+    excerpt: str
+    importance_score: float | None
+    tags: list[str]
+
+
+class ChatRequest(BaseModel):
+    session_id: str | None = None
+    message: str = Field(max_length=4000)
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    answer: str
+    citations: list[CitationResponse]
+    retrieved_count: int
+
+
+class SettingsResponse(BaseModel):
+    llm_provider: str
+    llm_model: str
+    chat_provider: str
+    chat_model: str
+    chat_top_k: int

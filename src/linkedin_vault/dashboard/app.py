@@ -7,23 +7,31 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from linkedin_vault.chat.retriever import retrieve_posts
+from linkedin_vault.chat.session import SessionStore
+from linkedin_vault.chat.synthesiser import extract_citation_ids, synthesise
 from linkedin_vault.config import load_settings
 from linkedin_vault.dashboard.schemas import (
+    ChatRequest,
+    ChatResponse,
+    CitationResponse,
     OkResponse,
     PostResponse,
     PostsResponse,
+    SettingsResponse,
     StatsResponse,
     TagsResponse,
     UpdateStatusRequest,
 )
 from linkedin_vault.db.database import DatabaseManager
+from linkedin_vault.enricher.base import LLMProviderError
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the database on startup so the first request never waits."""
+    """Initialize the database and session store on startup."""
     db_path = getattr(app.state, "db_path", None)
     if db_path is None:
         settings = load_settings()
@@ -31,6 +39,7 @@ async def lifespan(app: FastAPI):
         app.state.db_path = db_path
     db = DatabaseManager(db_path)
     await db.initialize_db()
+    app.state.session_store = SessionStore()
     yield
 
 
@@ -166,3 +175,72 @@ async def delete_post(post_id: int, db: DbDep) -> OkResponse:
         raise HTTPException(status_code=404, detail="Post not found")
     await db.delete_post(post_id)
     return OkResponse()
+
+
+# ---------------------------------------------------------------------------
+# Chat routes
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(
+    body: ChatRequest, db: DbDep, request: Request
+) -> ChatResponse:
+    if not body.message or not body.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    settings = load_settings()
+    top_k = max(1, min(20, settings.chat_top_k))
+
+    session_store: SessionStore = request.app.state.session_store
+    session = session_store.get_or_create(body.session_id)
+
+    try:
+        posts = await retrieve_posts(db, body.message, top_k)
+        answer = await synthesise(body.message, posts, session.messages, settings)
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    # Build citations from posts that were actually cited in the answer
+    post_map = {p.id: p for p in posts if p.id is not None}
+    cited_ids = extract_citation_ids(answer)
+    citations = [
+        CitationResponse(
+            post_id=pid,
+            url=p.url,
+            author_name=p.author_name,
+            excerpt=(p.content or "")[:300],
+            importance_score=p.importance_score,
+            tags=p.tags or [],
+        )
+        for pid in sorted(cited_ids)
+        if (p := post_map.get(pid)) is not None
+    ]
+
+    session_store.add_turn(session, body.message, answer)
+
+    return ChatResponse(
+        session_id=session.session_id,
+        answer=answer,
+        citations=citations,
+        retrieved_count=len(posts),
+    )
+
+
+@app.delete("/api/chat/{session_id}", response_model=OkResponse)
+async def clear_chat(session_id: str, request: Request) -> OkResponse:
+    session_store: SessionStore = request.app.state.session_store
+    session_store.delete(session_id)
+    return OkResponse()
+
+
+@app.get("/api/settings", response_model=SettingsResponse)
+async def get_settings_route() -> SettingsResponse:
+    settings = load_settings()
+    return SettingsResponse(
+        llm_provider=settings.llm_provider.value,
+        llm_model=settings.llm_model,
+        chat_provider=settings.get_chat_provider().value,
+        chat_model=settings.get_chat_model(),
+        chat_top_k=settings.chat_top_k,
+    )

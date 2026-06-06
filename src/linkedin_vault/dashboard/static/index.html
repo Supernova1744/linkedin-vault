@@ -9,12 +9,16 @@
 <body>
 <header class="header">
   <h1>LinkedIn <span>Vault</span></h1>
+  <nav class="view-tabs">
+    <button class="tab-btn active" data-view="posts" onclick="switchView('posts')">Posts</button>
+    <button class="tab-btn" data-view="chat" onclick="switchView('chat')">Chat</button>
+  </nav>
   <div id="stats-chips" class="stats-chips">
     <span class="chip">Loading…</span>
   </div>
 </header>
 
-<div class="layout">
+<div id="view-posts" class="layout view">
   <aside class="sidebar">
     <div class="sidebar-section">
       <label class="sidebar-label" for="search-input">Search</label>
@@ -50,6 +54,20 @@
     <div id="post-grid" class="post-grid"></div>
     <div id="pagination" class="pagination"></div>
   </main>
+</div>
+
+<div id="view-chat" class="view hidden">
+  <div class="chat-container">
+    <div id="chat-messages" class="chat-messages"></div>
+    <div id="chat-loading" class="chat-loading hidden">Thinking…</div>
+    <div class="chat-input-bar">
+      <textarea id="chat-input" rows="2" placeholder="Ask about your saved posts…"></textarea>
+      <div class="chat-actions">
+        <button id="chat-send-btn" onclick="sendChat()">Send</button>
+        <button id="chat-clear-btn" onclick="clearChat()">Clear</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Modal -->
@@ -476,6 +494,137 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ================================================================
+// Chat feature
+// ================================================================
+
+let chatSessionId = null;
+
+// ---- POST helper (not in original apiFetch set) ----
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const detail = await r.json().then(d => d.detail || r.status).catch(() => r.status);
+    throw new Error(String(detail));
+  }
+  return r.json();
+}
+
+// ---- View switching ----
+function switchView(view) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === view);
+  });
+  document.getElementById('view-posts').classList.toggle('hidden', view !== 'posts');
+  document.getElementById('view-chat').classList.toggle('hidden', view !== 'chat');
+  if (view === 'chat') {
+    document.getElementById('chat-input').focus();
+  }
+}
+
+// ---- Render a single chat bubble ----
+function appendBubble(role, text) {
+  const wrap = document.getElementById('chat-messages');
+  const el = document.createElement('div');
+  el.className = `chat-bubble chat-bubble-${role}`;
+  el.textContent = text;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// ---- Render citation cards below an assistant message ----
+function renderCitations(citations) {
+  if (!citations || !citations.length) return;
+  const wrap = document.getElementById('chat-messages');
+  const row = document.createElement('div');
+  row.className = 'chat-citations-row';
+  citations.forEach(c => {
+    const card = document.createElement('a');
+    card.className = 'chat-citation-card';
+    card.href = c.url;
+    card.target = '_blank';
+    card.rel = 'noopener';
+
+    const score = c.importance_score != null
+      ? `<span class="citation-score">${c.importance_score.toFixed(1)}</span>`
+      : '';
+    const tags = (c.tags || []).slice(0, 3)
+      .map(t => `<span class="tag tag-${tagColorIdx(t)}">${escHtml(t)}</span>`)
+      .join('');
+    const tagsRow = tags ? `<div class="citation-tags">${tags}</div>` : '';
+
+    card.innerHTML =
+      `<div class="citation-header">` +
+        `<span class="citation-id">Post ${c.post_id}</span>` +
+        score +
+      `</div>` +
+      `<div class="citation-author">${escHtml(c.author_name)}</div>` +
+      `<div class="citation-excerpt">${escHtml(c.excerpt)}</div>` +
+      tagsRow;
+
+    row.appendChild(card);
+  });
+  wrap.appendChild(row);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// ---- Send a chat message ----
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const message = input.value.trim();
+  if (!message) return;
+
+  input.value = '';
+  input.disabled = true;
+  document.getElementById('chat-send-btn').disabled = true;
+  document.getElementById('chat-loading').classList.remove('hidden');
+
+  appendBubble('user', message);
+
+  try {
+    const data = await apiPost('/api/chat', {
+      session_id: chatSessionId,
+      message
+    });
+    chatSessionId = data.session_id;
+    appendBubble('assistant', data.answer);
+    renderCitations(data.citations);
+  } catch (e) {
+    appendBubble('assistant', 'Error: ' + e.message);
+    showToast('Chat error: ' + e.message, 'error');
+  } finally {
+    input.disabled = false;
+    document.getElementById('chat-send-btn').disabled = false;
+    document.getElementById('chat-loading').classList.add('hidden');
+    input.focus();
+  }
+}
+
+// ---- Clear / reset chat session ----
+async function clearChat() {
+  if (chatSessionId) {
+    try { await apiDelete(`/api/chat/${chatSessionId}`); } catch { /* ignore */ }
+    chatSessionId = null;
+  }
+  document.getElementById('chat-messages').innerHTML = '';
+  document.getElementById('chat-input').focus();
+}
+
+// ---- Ctrl+Enter / Enter to send in chat textarea ----
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('chat-input');
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+});
 </script>
 </body>
 </html>

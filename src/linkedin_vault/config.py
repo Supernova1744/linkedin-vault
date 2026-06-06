@@ -46,11 +46,22 @@ class Settings(BaseSettings):
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8765
 
+    # Chat
+    chat_provider: LLMProvider | None = None  # falls back to llm_provider
+    chat_model: str = ""                       # falls back to llm_model
+    chat_top_k: int = 8
+
     def get_db_path(self) -> Path:
         if self.db_path:
             return self.db_path
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir / "vault.db"
+
+    def get_chat_provider(self) -> LLMProvider:
+        return self.chat_provider or self.llm_provider
+
+    def get_chat_model(self) -> str:
+        return self.chat_model or self.llm_model
 
 
 def load_settings() -> Settings:
