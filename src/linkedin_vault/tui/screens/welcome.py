@@ -1,5 +1,6 @@
 from typing import ClassVar
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -92,20 +93,33 @@ class WelcomeScreen(Screen):
         elif button_id == "btn-settings":
             self.action_settings()
         elif button_id == "btn-scrape":
-            self.notify(
-                "Scrape is implemented in Phase 2. Run: linkedin-vault scrape",
-                title="Coming Soon",
-            )
+            from linkedin_vault.tui.screens.scrape_screen import ScrapeScreen
+
+            self.app.push_screen(ScrapeScreen())
         elif button_id == "btn-enrich":
-            self.notify(
-                "Enrichment is implemented in Phase 3. Run: linkedin-vault enrich",
-                title="Coming Soon",
-            )
+            from linkedin_vault.tui.screens.enrich_screen import EnrichScreen
+
+            self.app.push_screen(EnrichScreen())
         elif button_id == "btn-dashboard":
-            self.notify(
-                "Dashboard is implemented in Phase 4. Run: linkedin-vault dashboard",
-                title="Coming Soon",
-            )
+            self._open_dashboard()
+
+    @work(thread=True)
+    def _open_dashboard(self) -> None:
+        import webbrowser
+
+        from linkedin_vault.config import load_settings
+        from linkedin_vault.dashboard.server import run_dashboard
+
+        settings = load_settings()
+        url = f"http://{settings.dashboard_host}:{settings.dashboard_port}"
+        self.app.call_from_thread(
+            self.notify,
+            f"Dashboard running at {url}  (press Ctrl+C in terminal to stop)",
+            title="Dashboard",
+            timeout=8,
+        )
+        webbrowser.open(url)
+        run_dashboard(settings)  # blocks until server exits
 
     def action_settings(self) -> None:
         from linkedin_vault.tui.screens.config_wizard import ConfigWizardScreen
