@@ -121,8 +121,10 @@ async def linkedin_browser_session(
         finally:
             # Always persist the session so the next run skips login
             try:
+                import os
                 session_path.parent.mkdir(parents=True, exist_ok=True)
                 await context.storage_state(path=str(session_path))
+                os.chmod(session_path, 0o600)
                 _logger.info("Browser session saved to %s", session_path)
             except PlaywrightError as exc:
                 _logger.warning("Could not save browser session: %s", exc)

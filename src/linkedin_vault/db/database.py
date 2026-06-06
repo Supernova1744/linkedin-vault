@@ -200,8 +200,11 @@ class DatabaseManager:
         return [_row_to_post(row) for row in rows]
 
     async def search_posts(self, query: str, limit: int = 50) -> list[Post]:
-        # Wrap in double-quotes to safely handle special FTS5 chars (C++, foo:bar, etc.)
-        safe_query = f'"{query}"'
+        if not query or not query.strip():
+            return []
+        # Escape embedded double-quotes (FTS5 phrase quoting syntax: "" = literal ")
+        escaped = query.replace('"', '""')
+        safe_query = f'"{escaped}"'
         sql = """
             SELECT p.*
             FROM posts p
@@ -210,10 +213,13 @@ class DatabaseManager:
             ORDER BY rank
             LIMIT ?
         """
-        async with aiosqlite.connect(self._db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(sql, (safe_query, limit))
-            rows = await cursor.fetchall()
+        try:
+            async with aiosqlite.connect(self._db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cursor = await conn.execute(sql, (safe_query, limit))
+                rows = await cursor.fetchall()
+        except aiosqlite.OperationalError:
+            return []
         return [_row_to_post(row) for row in rows]
 
     async def get_sync_state(self) -> SyncState:
@@ -320,7 +326,8 @@ class DatabaseManager:
         use_fts = bool(query and query.strip())
         if use_fts:
             assert query is not None  # narrowing for mypy
-            safe_q = f'"{query}"'
+            _escaped = query.replace('"', '""')
+            safe_q = f'"{_escaped}"'
             extra_where = (" AND " + " AND ".join(clauses)) if clauses else ""
             count_sql = (
                 "SELECT COUNT(*) AS cnt FROM posts p "

@@ -58,6 +58,8 @@ def load_settings() -> Settings:
 
 
 def save_settings_to_file(settings_dict: dict[str, str]) -> None:
+    import os
+
     env_path = Path.home() / ".linkedin-vault" / ".env"
     env_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -73,3 +75,4 @@ def save_settings_to_file(settings_dict: dict[str, str]) -> None:
 
     lines = [f"{k}={v}" for k, v in existing.items()]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(env_path, 0o600)

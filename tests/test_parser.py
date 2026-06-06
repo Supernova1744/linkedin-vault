@@ -215,3 +215,51 @@ def test_raw_post_to_model_optional_fields_none() -> None:
     assert post is not None
     assert post.author_profile_url is None
     assert post.post_date is None
+
+
+# ---------------------------------------------------------------------------
+# Phase-5 parser edge-case additions
+# ---------------------------------------------------------------------------
+
+
+def test_parse_post_date_feb_29_current_year_or_next() -> None:
+    """'Feb 29' is parsed via a leap-year anchor (2000) so strptime succeeds, then
+    the year is replaced with current or next year.  Returns a date string when
+    either candidate is a leap year, or None when neither is."""
+    import calendar
+
+    result = parse_post_date("Feb 29")
+    current_year = datetime.now(UTC).year
+    has_leap = calendar.isleap(current_year) or calendar.isleap(current_year + 1)
+    if has_leap:
+        assert result is not None
+        assert result.endswith("Z")
+        assert "02-29T" in result
+    else:
+        assert result is None
+
+
+def test_parse_post_date_zero_amount() -> None:
+    """'0d' (zero-days-ago) returns an ISO string very close to the current time."""
+    result = parse_post_date("0d")
+    assert result is not None
+    parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    delta = abs((parsed - datetime.now(UTC)).total_seconds())
+    assert delta < 10  # within 10 seconds
+
+
+def test_raw_post_to_model_whitespace_content_creates_post() -> None:
+    """Whitespace-only content passes the None/falsy guard and produces a Post.
+    This test documents the current permissive behaviour; tighten the guard if
+    whitespace-only content should be rejected."""
+    raw = RawPost(
+        url="https://www.linkedin.com/feed/update/urn:li:activity:777",
+        author_name="Alice",
+        author_profile_url=None,
+        content="   ",
+        post_date_raw=None,
+    )
+    result = raw_post_to_model(raw, "2024-06-01T12:00:00Z")
+    # Non-empty string "   " is truthy, so the guard passes
+    assert result is not None
+    assert result.content == "   "

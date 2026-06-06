@@ -6,7 +6,7 @@ from linkedin_vault.db.database import DatabaseManager
 from linkedin_vault.db.models import Post, SyncState, VaultStats
 
 
-async def test_initialize_db_creates_tables(db: DatabaseManager, tmp_db_path: Path) -> None:
+async def test_initialize_db_creates_tables(_db: DatabaseManager, tmp_db_path: Path) -> None:
     assert tmp_db_path.exists()
     import aiosqlite
     async with aiosqlite.connect(tmp_db_path) as conn:
@@ -260,3 +260,188 @@ async def test_delete_post(db: DatabaseManager, sample_post: Post) -> None:
     await db.delete_post(row_id)
     result = await db.get_post_by_id(row_id)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase-5 regression and coverage additions
+# ---------------------------------------------------------------------------
+
+
+async def test_upsert_preserves_status_on_re_scrape(
+    db: DatabaseManager, sample_post: Post
+) -> None:
+    """Re-upserting a post (as happens on re-scrape) must not reset a non-default status."""
+    row_id = await db.upsert_post(sample_post)
+    await db.update_post_status(row_id, "read")
+
+    # Simulate re-scrape: same linkedin_id, so ON CONFLICT path runs
+    await db.upsert_post(sample_post)
+
+    post = await db.get_post_by_id(row_id)
+    assert post is not None
+    assert post.status == "read"  # status column is intentionally excluded from ON CONFLICT SET
+
+
+async def test_search_posts_double_quote_returns_empty_not_error(
+    db: DatabaseManager,
+) -> None:
+    """A query with a double-quote must be escaped and return [] rather than OperationalError."""
+    results = await db.search_posts('foo"bar')
+    assert results == []
+
+
+async def test_search_posts_empty_string_returns_empty(
+    db: DatabaseManager, sample_post: Post
+) -> None:
+    """An empty query string must short-circuit to [] without touching FTS5."""
+    await db.upsert_post(sample_post)
+    results = await db.search_posts("")
+    assert results == []
+
+
+async def test_get_posts_filtered_pagination(db: DatabaseManager) -> None:
+    """25 posts inserted, page=2 page_size=10 returns 10 posts with total=25."""
+    for i in range(1, 26):
+        post = Post(
+            linkedin_id=f"urn:li:activity:pg{i}",
+            url=f"https://linkedin.com/post/pg{i}",
+            author_name=f"Author {i}",
+            content=f"Content {i}",
+            scraped_at=f"2024-01-{i:02d}T00:00:00Z",
+        )
+        await db.upsert_post(post)
+
+    posts, total = await db.get_posts_filtered(page=2, page_size=10)
+    assert total == 25
+    assert len(posts) == 10
+
+
+async def test_get_posts_filtered_tag_filter(db: DatabaseManager) -> None:
+    """tag='Python' returns only posts that contain that tag."""
+    p_python = Post(
+        linkedin_id="urn:li:activity:tag-py",
+        url="https://linkedin.com/post/tag-py",
+        author_name="Alice",
+        content="Python is great",
+        scraped_at="2024-01-01T00:00:00Z",
+        tags=["Python", "AI"],
+        summary="summary",
+        importance_score=7.0,
+        is_outdated=False,
+        enriched_at="2024-01-01T01:00:00Z",
+        enrichment_model="test",
+    )
+    p_js = Post(
+        linkedin_id="urn:li:activity:tag-js",
+        url="https://linkedin.com/post/tag-js",
+        author_name="Bob",
+        content="JavaScript is everywhere",
+        scraped_at="2024-01-02T00:00:00Z",
+        tags=["JavaScript"],
+        summary="summary",
+        importance_score=6.0,
+        is_outdated=False,
+        enriched_at="2024-01-02T01:00:00Z",
+        enrichment_model="test",
+    )
+    await db.upsert_post(p_python)
+    await db.upsert_post(p_js)
+
+    posts, total = await db.get_posts_filtered(tag="Python")
+    assert total == 1
+    assert posts[0].linkedin_id == "urn:li:activity:tag-py"
+
+
+async def test_get_posts_filtered_status_filter(db: DatabaseManager) -> None:
+    """status_filter='unread' returns only unread posts."""
+    p_unread = Post(
+        linkedin_id="urn:li:activity:st-unread",
+        url="https://linkedin.com/post/st-unread",
+        author_name="Alice",
+        content="unread post",
+        scraped_at="2024-01-01T00:00:00Z",
+        status="unread",
+    )
+    p_read = Post(
+        linkedin_id="urn:li:activity:st-read",
+        url="https://linkedin.com/post/st-read",
+        author_name="Bob",
+        content="read post",
+        scraped_at="2024-01-02T00:00:00Z",
+        status="read",
+    )
+    await db.upsert_post(p_unread)
+    await db.upsert_post(p_read)
+
+    posts, total = await db.get_posts_filtered(status_filter="unread")
+    assert total == 1
+    assert posts[0].status == "unread"
+
+
+async def test_get_posts_for_enrichment_unenriched_only(
+    db: DatabaseManager, sample_post: Post
+) -> None:
+    """re_enrich=False returns only posts with enriched_at IS NULL."""
+    await db.upsert_post(sample_post)  # unenriched
+
+    enriched = Post(
+        linkedin_id="urn:li:activity:already-enriched",
+        url="https://linkedin.com/post/already-enriched",
+        author_name="Bob",
+        content="enriched post content",
+        scraped_at="2024-01-02T00:00:00Z",
+        summary="summary",
+        tags=["AI"],
+        importance_score=5.0,
+        is_outdated=False,
+        enriched_at="2024-01-02T01:00:00Z",
+        enrichment_model="glm-4-flash",
+    )
+    await db.upsert_post(enriched)
+
+    posts = await db.get_posts_for_enrichment(re_enrich=False)
+    assert len(posts) == 1
+    assert posts[0].linkedin_id == sample_post.linkedin_id
+
+
+async def test_get_posts_for_enrichment_all(
+    db: DatabaseManager, sample_post: Post
+) -> None:
+    """re_enrich=True returns all posts regardless of enriched_at."""
+    await db.upsert_post(sample_post)  # unenriched
+
+    enriched = Post(
+        linkedin_id="urn:li:activity:enriched-all",
+        url="https://linkedin.com/post/enriched-all",
+        author_name="Bob",
+        content="enriched post content",
+        scraped_at="2024-01-02T00:00:00Z",
+        summary="summary",
+        tags=["AI"],
+        importance_score=5.0,
+        is_outdated=False,
+        enriched_at="2024-01-02T01:00:00Z",
+        enrichment_model="glm-4-flash",
+    )
+    await db.upsert_post(enriched)
+
+    posts = await db.get_posts_for_enrichment(re_enrich=True)
+    assert len(posts) == 2
+
+
+async def test_get_post_by_linkedin_id_not_found(db: DatabaseManager) -> None:
+    """Returns None for a linkedin_id that doesn't exist in the database."""
+    result = await db.get_post_by_linkedin_id("urn:li:activity:nonexistent-9999")
+    assert result is None
+
+
+async def test_update_post_status_all_statuses(
+    db: DatabaseManager, sample_post: Post
+) -> None:
+    """All four valid status values can be round-tripped through update_post_status."""
+    row_id = await db.upsert_post(sample_post)
+    for status in ("unread", "read", "skipped", "saved_later"):
+        await db.update_post_status(row_id, status)
+        post = await db.get_post_by_id(row_id)
+        assert post is not None
+        assert post.status == status

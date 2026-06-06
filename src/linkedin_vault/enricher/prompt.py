@@ -93,7 +93,7 @@ def build_enrichment_prompt(
         f"Post Author: {author_name}\n"
         f"Post Date: {post_date_str}\n"
         f"Today's Date: {today}\n\n"
-        f"Post Content:\n{content}\n\n"
+        f"<post_content>\n{content}\n</post_content>\n\n"
         f"Return JSON in exactly this format:\n{_RESPONSE_SCHEMA}\n\n"
         "Rules:\n"
         "- summary: 2-3 neutral, factual sentences describing the post content\n"
@@ -154,12 +154,24 @@ def parse_enrichment_response(raw_json: str) -> EnrichmentResult:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in LLM response: {exc}") from exc
 
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+
     for field in ("summary", "tags", "importance_score", "is_outdated"):
         if field not in data:
             raise ValueError(f"Missing required field '{field}' in LLM response")
 
-    summary = str(data["summary"])
-    tags = [str(t) for t in data["tags"]]
+    if data["tags"] is None:
+        raise ValueError("Field 'tags' must be a list, not null")
+    if data["importance_score"] is None:
+        raise ValueError("Field 'importance_score' must be a number, not null")
+
+    summary = str(data["summary"])[:1000]
+    raw_tags = data["tags"]
+    if not isinstance(raw_tags, list):
+        raise ValueError(f"Field 'tags' must be a list, got {type(raw_tags).__name__}")
+    _allowed = frozenset(ALLOWED_TAGS)
+    tags = [str(t) for t in raw_tags if str(t) in _allowed]
     importance_score = max(0.0, min(10.0, float(data["importance_score"])))
     is_outdated = bool(data["is_outdated"])
 

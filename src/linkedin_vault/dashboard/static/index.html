@@ -233,12 +233,22 @@ function renderStats(stats) {
 
 function renderTags(tags) {
   const cloud = document.getElementById('tag-cloud');
-  if (!tags.length) { cloud.innerHTML = '<span style="color:var(--text-dim);font-size:.75rem">No tags yet</span>'; return; }
-  cloud.innerHTML = tags.map(t => {
+  cloud.innerHTML = '';
+  if (!tags.length) {
+    const msg = document.createElement('span');
+    msg.style.cssText = 'color:var(--text-dim);font-size:.75rem';
+    msg.textContent = 'No tags yet';
+    cloud.appendChild(msg);
+    return;
+  }
+  tags.forEach(t => {
     const active = t === state.tag ? ' tag-active' : '';
-    return `<button class="tag tag-filter tag-${tagColorIdx(t)}${active}"
-              onclick="selectTag('${escHtml(t)}')">${escHtml(t)}</button>`;
-  }).join('');
+    const btn = document.createElement('button');
+    btn.className = `tag tag-filter tag-${tagColorIdx(t)}${active}`;
+    btn.textContent = t;
+    btn.addEventListener('click', () => selectTag(t));
+    cloud.appendChild(btn);
+  });
 }
 
 function renderPagination(total, page, pages) {

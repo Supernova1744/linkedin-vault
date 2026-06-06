@@ -27,7 +27,7 @@ from linkedin_vault.enricher.zai import ZAI_KNOWN_MODELS, ZAIProvider
 _VALID_JSON = json.dumps(
     {
         "summary": "The author shares insights on Python performance.",
-        "tags": ["Python", "Performance"],
+        "tags": ["Python", "Open Source"],  # both must be in ALLOWED_TAGS
         "importance_score": 7.5,
         "is_outdated": False,
     }
@@ -68,7 +68,7 @@ def _make_async_client_mock(
 def test_parse_enrichment_response_valid() -> None:
     result = parse_enrichment_response(_VALID_JSON)
     assert result.summary == "The author shares insights on Python performance."
-    assert result.tags == ["Python", "Performance"]
+    assert result.tags == ["Python", "Open Source"]
     assert result.importance_score == 7.5
     assert result.is_outdated is False
     assert result.model_used == ""  # set by calling provider
@@ -123,7 +123,7 @@ def test_parse_enrichment_response_extracts_embedded_json() -> None:
     """Handles prose + JSON when the fence stripping doesn't fire."""
     wrapped = "Here is your analysis:\n" + _VALID_JSON + "\nHope that helps!"
     result = parse_enrichment_response(wrapped)
-    assert result.tags == ["Python", "Performance"]
+    assert result.tags == ["Python", "Open Source"]
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +252,159 @@ def test_get_provider_returns_ollama(tmp_path: Path) -> None:
     )
     provider = get_provider(settings)
     assert isinstance(provider, OllamaProvider)
+
+
+# ---------------------------------------------------------------------------
+# Null-field regression tests (Phase-5 bug fixes)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_enrichment_response_null_tags_raises_value_error() -> None:
+    """tags: null must raise ValueError (was TypeError before the fix)."""
+    raw = json.dumps(
+        {"summary": "x", "tags": None, "importance_score": 5.0, "is_outdated": False}
+    )
+    with pytest.raises(ValueError, match="tags"):
+        parse_enrichment_response(raw)
+
+
+def test_parse_enrichment_response_null_importance_score_raises_value_error() -> None:
+    """importance_score: null must raise ValueError."""
+    raw = json.dumps(
+        {"summary": "x", "tags": ["AI"], "importance_score": None, "is_outdated": False}
+    )
+    with pytest.raises(ValueError, match="importance_score"):
+        parse_enrichment_response(raw)
+
+
+def test_parse_enrichment_response_top_level_null_raises_value_error() -> None:
+    """A top-level JSON null (not a dict) must raise ValueError mentioning 'JSON object'."""
+    with pytest.raises(ValueError, match="JSON object"):
+        parse_enrichment_response("null")
+
+
+def test_parse_enrichment_response_tags_filtered_to_allowed() -> None:
+    """Tags not in ALLOWED_TAGS are silently dropped; recognised ones are kept."""
+    raw = json.dumps(
+        {
+            "summary": "x",
+            "tags": ["AI", "FakeTag", "Python"],
+            "importance_score": 5.0,
+            "is_outdated": False,
+        }
+    )
+    result = parse_enrichment_response(raw)
+    assert "AI" in result.tags
+    assert "Python" in result.tags
+    assert "FakeTag" not in result.tags
+
+
+def test_parse_enrichment_response_tags_not_a_list_raises() -> None:
+    """tags must be a list; a bare string value must raise ValueError."""
+    raw = json.dumps(
+        {"summary": "x", "tags": "AI", "importance_score": 5.0, "is_outdated": False}
+    )
+    with pytest.raises(ValueError, match="list"):
+        parse_enrichment_response(raw)
+
+
+# ---------------------------------------------------------------------------
+# ZAIProvider.enrich_post — retry behaviour
+# ---------------------------------------------------------------------------
+
+
+async def test_zai_provider_enrich_post_retries_on_429_then_succeeds() -> None:
+    """429 on attempts 1 and 2, 200 on attempt 3: valid EnrichmentResult is returned."""
+    success_body = json.dumps(
+        {"summary": "x", "tags": ["AI"], "importance_score": 7.0, "is_outdated": False}
+    )
+    success_json = {"choices": [{"message": {"content": success_body}}]}
+
+    mock_429 = MagicMock()
+    mock_429.status_code = 429
+    mock_429.text = "rate limited"
+
+    mock_200 = MagicMock()
+    mock_200.status_code = 200
+    mock_200.json = MagicMock(return_value=success_json)
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=[mock_429, mock_429, mock_200])
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("linkedin_vault.enricher.zai.httpx.AsyncClient", return_value=mock_client),
+        patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        provider = ZAIProvider(api_key="test-key")
+        result = await provider.enrich_post(
+            content="test content",
+            author_name="Alice",
+            post_date="2024-01-15",
+            model="glm-4-flash",
+            today="2026-06-06",
+        )
+
+    assert result.tags == ["AI"]
+    assert result.importance_score == 7.0
+    assert result.model_used == "glm-4-flash"
+    assert mock_client.post.call_count == 3  # three total attempts
+    assert mock_sleep.call_count == 2  # sleep before attempt 2 and attempt 3
+
+
+async def test_zai_provider_enrich_post_exhausted_retries_raises() -> None:
+    """All MAX_RETRIES (3) attempts return 429: LLMProviderError raised after 3 calls."""
+    mock_429 = MagicMock()
+    mock_429.status_code = 429
+    mock_429.text = "rate limited"
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_429)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("linkedin_vault.enricher.zai.httpx.AsyncClient", return_value=mock_client),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        provider = ZAIProvider(api_key="test-key")
+        with pytest.raises(LLMProviderError):
+            await provider.enrich_post(
+                content="test content",
+                author_name="Alice",
+                post_date=None,
+                model="glm-4-flash",
+                today="2026-06-06",
+            )
+
+    assert mock_client.post.call_count == 3  # MAX_RETRIES = 3
+
+
+async def test_zai_provider_enrich_post_401_no_retry() -> None:
+    """401 Unauthorized is not in RETRYABLE_STATUS_CODES: raises after exactly 1 call."""
+    mock_401 = MagicMock()
+    mock_401.status_code = 401
+    mock_401.text = "unauthorized"
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_401)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("linkedin_vault.enricher.zai.httpx.AsyncClient", return_value=mock_client),
+        patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        provider = ZAIProvider(api_key="test-key")
+        with pytest.raises(LLMProviderError):
+            await provider.enrich_post(
+                content="test content",
+                author_name="Alice",
+                post_date=None,
+                model="glm-4-flash",
+                today="2026-06-06",
+            )
+
+    assert mock_client.post.call_count == 1  # no retry for non-transient errors
+    assert mock_sleep.call_count == 0

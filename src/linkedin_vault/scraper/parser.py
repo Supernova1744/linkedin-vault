@@ -159,14 +159,23 @@ def parse_post_date(raw_date: str) -> str | None:
         except ValueError:
             continue
 
-    # --- Absolute dates without year (assume current year) ---
+    # --- Absolute dates without year ---
+    # strptime defaults to year 1900 (not a leap year), which causes "Feb 29"
+    # to raise ValueError before .replace() is ever reached.  Parse against a
+    # known leap-year anchor (2000) first, then replace with the target year.
     current_year = datetime.now(UTC).year
     for fmt in _ABSOLUTE_FMTS_WITHOUT_YEAR:
+        anchor_fmt = f"{fmt} %Y"
+        anchor_text = f"{text} 2000"
         try:
-            dt = datetime.strptime(text, fmt).replace(year=current_year)
-            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            base_dt = datetime.strptime(anchor_text, anchor_fmt)
         except ValueError:
             continue
+        for year_candidate in (current_year, current_year + 1):
+            try:
+                return base_dt.replace(year=year_candidate).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                continue
 
     logger.debug("parse_post_date: unrecognised format %r", text)
     return None
