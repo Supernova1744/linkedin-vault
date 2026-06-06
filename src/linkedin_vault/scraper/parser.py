@@ -1,11 +1,13 @@
 """
-LinkedIn post data extraction — pure parsing logic plus DOM extraction.
+LinkedIn post data extraction.
 
-DOM Selectors are defined as module-level constants here so there is exactly
-one place to update them when LinkedIn changes its markup.
+Primary scraping strategy: **network interception**.
+LinkedIn's saved-posts page loads posts via XHR calls to
+/voyager/api/graphql.  We intercept those JSON responses and parse the
+``included`` array — this is stable regardless of DOM changes.
 
-NOTE: LinkedIn's DOM changes frequently. If scraping breaks, update the
-      SELECTORS_* lists below before touching any other code.
+The DOM selectors below are kept as a reference / fallback, but the main
+scraping path no longer depends on them.
 """
 
 from __future__ import annotations
@@ -120,6 +122,87 @@ class RawPost:
     author_profile_url: str | None
     content: str | None
     post_date_raw: str | None
+
+
+# ---------------------------------------------------------------------------
+# Network-interception parser  (primary scraping path)
+# ---------------------------------------------------------------------------
+
+
+def extract_raws_from_api_batch(
+    data: dict,
+    seen_ids: set[str],
+) -> list[RawPost]:
+    """Parse a single LinkedIn Voyager GraphQL response into :class:`RawPost` objects.
+
+    LinkedIn loads saved posts via XHR to ``/voyager/api/graphql``.  Each
+    response contains an ``included`` array; items that have a ``summary.text``
+    field are post cards.
+
+    Args:
+        data:     Parsed JSON body of one XHR response.
+        seen_ids: Mutable set of activity/ugcPost IDs already processed this
+                  session.  Updated in-place; duplicates are skipped.
+
+    Returns:
+        A list of :class:`RawPost` instances (may be empty).
+    """
+    posts: list[RawPost] = []
+    included = data.get("included", [])
+
+    for item in included:
+        if not isinstance(item, dict):
+            continue
+
+        # Content lives in item["summary"]["text"]
+        summary_node = item.get("summary")
+        if not isinstance(summary_node, dict):
+            continue
+        content = summary_node.get("text", "").strip()
+        if not content:
+            continue
+
+        # Derive a stable activity/ugcPost URN for deduplication + DB key.
+        # Try entityUrn and trackingUrn first, then fall back to navigationUrl.
+        uid: str | None = None
+        nav_url: str = item.get("navigationUrl", "")
+        for urn_field in ("entityUrn", "trackingUrn"):
+            m = re.search(r"urn:li:(?:activity|ugcPost):\d+", item.get(urn_field, ""))
+            if m:
+                uid = m.group(0)
+                break
+        if not uid:
+            m = re.search(r"urn:li:(?:activity|ugcPost):\d+", nav_url)
+            if m:
+                uid = m.group(0)
+        if not uid or uid in seen_ids:
+            continue
+        seen_ids.add(uid)
+
+        author = ((item.get("title") or {}).get("text") or "").strip() or None
+
+        # "secondarySubtitle" is typically "2w • 🌐" — strip the icon part
+        secondary = (item.get("secondarySubtitle") or {}).get("text", "")
+        date_raw = secondary.split("•")[0].strip() or None
+
+        # Normalise the navigation URL to an absolute URL that contains the URN
+        if nav_url.startswith("/"):
+            nav_url = f"https://www.linkedin.com{nav_url}"
+        elif not nav_url.startswith("http"):
+            # Construct from the URN directly so extract_linkedin_id works
+            nav_url = f"https://www.linkedin.com/feed/update/{uid}"
+
+        posts.append(
+            RawPost(
+                url=nav_url or None,
+                author_name=author,
+                author_profile_url=None,
+                content=content,
+                post_date_raw=date_raw,
+            )
+        )
+
+    return posts
 
 
 # ---------------------------------------------------------------------------

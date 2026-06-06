@@ -22,9 +22,8 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, async_playwright
 
 from linkedin_vault.scraper.parser import (
-    SELECTOR_POST_CONTAINER,
     RawPost,
-    extract_post_from_element,
+    extract_raws_from_api_batch,
 )
 from linkedin_vault.utils.logging import get_logger
 
@@ -161,228 +160,97 @@ async def _perform_manual_login(page: Page) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scrolling + extraction
+# Network-interception scrolling  (primary scraping path)
 # ---------------------------------------------------------------------------
 
+# LinkedIn's saved-posts GraphQL endpoint — we intercept all responses to it.
+_VOYAGER_GRAPHQL = "voyager/api/graphql"
 
-_DISCOVERY_JS = """
-() => {
-    const url = location.href;
-    const title = document.title;
-
-    // --- selector probe (known candidates) ---
-    const probes = [
-        '[data-urn]', '[data-urn*="activity"]', '[data-urn*="ugcPost"]',
-        '[data-urn*="savedItem"]', '[data-urn*="miniUpdateV2"]',
-        '.feed-shared-update-v2', '.occludable-update', '.entity-result',
-        'article', 'li.artdeco-list__item', '.artdeco-list__item',
-        '.scaffold-finite-scroll__content > div',
-        '.scaffold-finite-scroll__content > ul > li',
-        '[class*="occludable"]', '[class*="feed-shared"]',
-        '[class*="update-v2"]', '[class*="relative"]',
-        'main li', 'main article', 'main > div > div',
-    ];
-    const hits = {};
-    for (const sel of probes) {
-        try {
-            const n = document.querySelectorAll(sel).length;
-            if (n > 0) hits[sel] = n;
-        } catch(_) {}
-    }
-
-    // --- data-urn samples ---
-    const urnEls = Array.from(document.querySelectorAll('[data-urn]')).slice(0, 12);
-    const urnSamples = urnEls.map(el => ({
-        tag: el.tagName,
-        urn: (el.getAttribute('data-urn') || '').substring(0, 80),
-        cls: el.className.substring(0, 70)
-    }));
-
-    // --- discover repeated class names (likely post-card containers) ---
-    const classCounts = {};
-    document.querySelectorAll('*').forEach(el => {
-        el.classList.forEach(c => { classCounts[c] = (classCounts[c] || 0) + 1; });
-    });
-    const repeated = Object.entries(classCounts)
-        .filter(([, n]) => n >= 2 && n <= 20)
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 30)
-        .map(([cls, n]) => `${n}x .${cls}`);
-
-    // --- scaffold / main content children ---
-    const mainEl = document.querySelector(
-        '.scaffold-finite-scroll__content, main, .feed-body, #main-content'
-    );
-    const mainChildren = mainEl
-        ? Array.from(mainEl.children).slice(0, 6).map(el =>
-            `<${el.tagName.toLowerCase()} class="${el.className.substring(0, 60)}" id="${el.id}">`)
-        : [];
-
-    return { url, title, hits, urnSamples, repeated, mainChildren };
-}
-"""
-
-
-async def _run_page_diagnostic(page: Page) -> dict:
-    """Run JS discovery on the page; returns empty dict on error."""
-    try:
-        return await page.evaluate(_DISCOVERY_JS)  # type: ignore[arg-type]
-    except Exception as exc:
-        _logger.debug("Page diagnostic JS failed: %s", exc)
-        return {}
-
-
-async def _write_diagnostic_file(diag: dict, filename: str = "debug_diagnostic.txt") -> str:
-    """Write diagnostic info to ~/.linkedin-vault/<filename>."""
-    from pathlib import Path
-    path = Path.home() / ".linkedin-vault" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f"URL:   {diag.get('url', '?')}",
-        f"Title: {diag.get('title', '?')}",
-        "",
-        "── Selector hits ──────────────────────────────────",
-    ]
-    hits = diag.get("hits", {})
-    if hits:
-        for sel, n in hits.items():
-            lines.append(f"  {n:4d}  {sel}")
-    else:
-        lines.append("  (none matched)")
-    lines += ["", "── data-urn samples ───────────────────────────────"]
-    for s in diag.get("urnSamples", []):
-        lines.append(f"  <{s['tag'].lower()}> cls={s['cls']!r}  urn={s['urn']!r}")
-    if not diag.get("urnSamples"):
-        lines.append("  (no [data-urn] elements on page)")
-    lines += ["", "── Repeated class names (2–20 occurrences) ────────"]
-    for r in diag.get("repeated", []):
-        lines.append(f"  {r}")
-    lines += ["", "── Main content children ──────────────────────────"]
-    for c in diag.get("mainChildren", []):
-        lines.append(f"  {c}")
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return str(path)
-
-
-async def _save_debug_screenshot(page: Page) -> str | None:
-    """Save a screenshot to ~/.linkedin-vault/debug_screenshot.png and return the path."""
-    try:
-        from pathlib import Path
-        screenshot_path = Path.home() / ".linkedin-vault" / "debug_screenshot.png"
-        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-        await page.screenshot(path=str(screenshot_path), full_page=False)
-        return str(screenshot_path)
-    except Exception as exc:
-        _logger.debug("Could not save debug screenshot: %s", exc)
-        return None
+# Scrolls with no new API batches before giving up.
+_MAX_STALE_SCROLLS = 8
 
 
 async def scroll_and_extract_raw_posts(
     page: Page,
-    max_no_new_scrolls: int = 3,
+    max_stale_scrolls: int = _MAX_STALE_SCROLLS,
 ) -> AsyncGenerator[RawPost, None]:
-    """Async generator — yields :class:`RawPost` objects from the Saved Posts
-    feed, scrolling lazily until no new posts load.
+    """Async generator — intercepts LinkedIn's GraphQL XHR responses while
+    scrolling the Saved Posts feed and yields :class:`RawPost` objects.
 
-    Stops when ``max_no_new_scrolls`` consecutive scrolls produce zero new
-    post containers (i.e. the feed is fully loaded).
+    LinkedIn does NOT render post content as stable DOM elements; it loads
+    posts via paginated XHR calls to ``/voyager/api/graphql``.  Intercepting
+    those JSON responses is the only reliable extraction strategy.
 
-    The caller controls early termination: ``break``-ing out of the ``async for``
-    loop (e.g. on hitting a post already in the DB) cleanly closes the generator.
+    Stops after ``max_stale_scrolls`` consecutive scrolls with no new API
+    batches (i.e. the feed is fully loaded).
 
     Args:
-        page: A Playwright :class:`Page` already pointed at the saved posts URL.
-        max_no_new_scrolls: Stop after this many scrolls with no new containers.
+        page:              A Playwright :class:`Page` pointed at the saved
+                           posts URL.
+        max_stale_scrolls: Number of empty scrolls before stopping.
     """
-    _logger.info("Page URL after navigation: %s", page.url)
+    _logger.info("Starting network-interception scrape on %s", page.url)
 
-    # Step 1: wait for something guaranteed to appear (nav / heading / any li),
-    # just to ensure the page's JS has run.  This is NOT our post selector.
-    _BOOT_SELECTOR = "h1, h2, header, nav, li, .artdeco-card, article"
-    try:
-        await page.wait_for_selector(_BOOT_SELECTOR, timeout=PAGE_LOAD_TIMEOUT)
-    except PlaywrightError:
-        _logger.warning("Page appears completely blank after %ds.", PAGE_LOAD_TIMEOUT // 1000)
-
-    # Step 2: extra wait for LinkedIn's lazy-render to populate the feed.
-    await page.wait_for_timeout(5_000)
-
-    # Step 3: run the discovery diagnostic on the now-loaded page.
-    diag = await _run_page_diagnostic(page)
-    diag_path = await _write_diagnostic_file(diag)
-    _logger.info("Page diagnostic written to %s  hits=%s", diag_path, diag.get("hits", {}))
-
-    # Step 4: wait for our post containers.
-    try:
-        await page.wait_for_selector(SELECTOR_POST_CONTAINER, timeout=PAGE_LOAD_TIMEOUT)
-    except PlaywrightError:
-        screenshot = await _save_debug_screenshot(page)
-        _logger.warning(
-            "No post containers found within %ds. URL: %s. "
-            "Diagnostic: %s  Screenshot: %s",
-            PAGE_LOAD_TIMEOUT // 1000,
-            page.url,
-            diag_path,
-            screenshot or "n/a",
-        )
-        return
-
+    # Collected raw API response bodies; appended by the async callback below.
+    raw_batches: list[dict] = []
     seen_ids: set[str] = set()
-    no_new_scroll_count = 0
 
-    while no_new_scroll_count < max_no_new_scrolls:
+    async def _on_response(response) -> None:  # type: ignore[no-untyped-def]
+        if _VOYAGER_GRAPHQL not in response.url:
+            return
+        if response.status != 200:
+            return
+        if "json" not in response.headers.get("content-type", ""):
+            return
         try:
-            containers = await page.query_selector_all(SELECTOR_POST_CONTAINER)
-        except PlaywrightError as exc:
-            _logger.warning("query_selector_all failed: %s", exc)
-            break
+            body = await response.body()
+            import json as _json
+            data = _json.loads(body)
+            included = data.get("included", [])
+            # Only keep batches that contain post items (have summary.text)
+            if any(
+                isinstance(it, dict)
+                and isinstance(it.get("summary"), dict)
+                and it["summary"].get("text")
+                for it in included
+            ):
+                raw_batches.append(data)
+                _logger.debug("Captured API batch (%d total)", len(raw_batches))
+        except Exception as exc:
+            _logger.debug("Failed to parse API response: %s", exc)
 
-        new_in_batch = 0
-        for container in containers:
-            # Build a stable dedup key: prefer data-urn, fall back to the
-            # first post-link href found inside the container.
-            try:
-                uid = await container.get_attribute("data-urn") or ""
-                if not uid:
-                    link = await container.query_selector(
-                        "a[href*='/feed/update/'], a[href*='/posts/'], a[href*='/pulse/']"
-                    )
-                    if link:
-                        uid = (await link.get_attribute("href")) or ""
-            except PlaywrightError:
-                continue
+    page.on("response", _on_response)
 
-            if not uid or uid in seen_ids:
-                continue
+    # Let the first batch load before starting scroll loop
+    await page.wait_for_timeout(4_000)
 
-            seen_ids.add(uid)
-            new_in_batch += 1
+    stale = 0
+    prev_batch_count = 0
 
-            try:
-                raw = await extract_post_from_element(container)
-            except Exception as exc:
-                _logger.warning("extract_post_from_element raised unexpectedly: %s", exc)
-                continue
-
-            yield raw
-
-        if new_in_batch == 0:
-            no_new_scroll_count += 1
+    while stale < max_stale_scrolls:
+        # Process any newly arrived batches
+        if len(raw_batches) > prev_batch_count:
+            for data in raw_batches[prev_batch_count:]:
+                for raw in extract_raws_from_api_batch(data, seen_ids):
+                    yield raw
+            prev_batch_count = len(raw_batches)
+            stale = 0
             _logger.debug(
-                "No new posts after scroll (%d/%d).",
-                no_new_scroll_count,
-                max_no_new_scrolls,
+                "Posts so far: %d  (batches: %d)", len(seen_ids), len(raw_batches)
             )
         else:
-            no_new_scroll_count = 0
-            _logger.debug("Found %d new post(s) in this batch.", new_in_batch)
+            stale += 1
+            _logger.debug("No new batches after scroll (%d/%d).", stale, max_stale_scrolls)
 
-        # Scroll 2x viewport height to trigger LinkedIn's lazy loader
         try:
-            await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await page.wait_for_timeout(SCROLL_WAIT_MS)
         except PlaywrightError as exc:
             _logger.warning("Scroll failed: %s", exc)
             break
 
-    _logger.info("Scroll complete. Total unique containers seen: %d.", len(seen_ids))
+    _logger.info(
+        "Scroll complete. Total posts extracted: %d  API batches: %d",
+        len(seen_ids),
+        len(raw_batches),
+    )
