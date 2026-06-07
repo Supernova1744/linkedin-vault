@@ -222,6 +222,37 @@ class DatabaseManager:
             return []
         return [_row_to_post(row) for row in rows]
 
+    async def search_posts_keywords(self, keywords: str, limit: int = 50) -> list[Post]:
+        """FTS5 keyword search — each token is matched independently (implicit AND).
+
+        Unlike :meth:`search_posts` (phrase match), this method lets FTS5 rank
+        posts that contain ALL the provided keywords anywhere in content/summary/tags.
+        Intended for natural-language chat queries where phrase matching is too strict.
+        """
+        if not keywords or not keywords.strip():
+            return []
+        import re as _re
+        # Strip FTS5 special characters to avoid parse errors
+        safe = _re.sub(r'["\(\)\*\^:@]', " ", keywords).strip()
+        if not safe:
+            return []
+        sql = """
+            SELECT p.*
+            FROM posts p
+            JOIN posts_fts fts ON p.id = fts.rowid
+            WHERE posts_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        """
+        try:
+            async with aiosqlite.connect(self._db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cursor = await conn.execute(sql, (safe, limit))
+                rows = await cursor.fetchall()
+        except aiosqlite.OperationalError:
+            return []
+        return [_row_to_post(row) for row in rows]
+
     async def get_sync_state(self) -> SyncState:
         async with aiosqlite.connect(self._db_path) as conn:
             conn.row_factory = aiosqlite.Row

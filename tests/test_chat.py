@@ -169,12 +169,12 @@ class TestSessionStore:
 async def test_retrieve_uses_fts5_when_results_available():
     mock_db = MagicMock()
     posts = [make_post(1), make_post(2)]
-    mock_db.search_posts = AsyncMock(return_value=posts)
+    mock_db.search_posts_keywords = AsyncMock(return_value=posts)
     mock_db.get_all_posts = AsyncMock(return_value=[])
 
     result = await retrieve_posts(mock_db, "python", top_k=5)
 
-    mock_db.search_posts.assert_awaited_once_with("python", limit=5)
+    mock_db.search_posts_keywords.assert_awaited_once_with("python", limit=5)
     mock_db.get_all_posts.assert_not_awaited()
     assert result == posts
 
@@ -182,7 +182,7 @@ async def test_retrieve_uses_fts5_when_results_available():
 async def test_retrieve_falls_back_to_importance_when_fts5_empty():
     """When FTS5 returns nothing, fall back to top-K sorted by importance_score."""
     mock_db = MagicMock()
-    mock_db.search_posts = AsyncMock(return_value=[])
+    mock_db.search_posts_keywords = AsyncMock(return_value=[])
     fallback_posts = [
         make_post(1, importance_score=5.0),
         make_post(2, importance_score=9.0),
@@ -192,8 +192,9 @@ async def test_retrieve_falls_back_to_importance_when_fts5_empty():
 
     result = await retrieve_posts(mock_db, "obscure query", top_k=3)
 
-    mock_db.search_posts.assert_awaited_once()
-    mock_db.get_all_posts.assert_awaited_once_with(limit=3)
+    mock_db.search_posts_keywords.assert_awaited_once()
+    # Fallback fetches top_k * 5 to have a large pool to sort from
+    mock_db.get_all_posts.assert_awaited_once_with(limit=15)
     # Must be sorted descending by importance_score
     assert result[0].id == 2  # score 9.0
     assert result[1].id == 1  # score 5.0
@@ -202,23 +203,25 @@ async def test_retrieve_falls_back_to_importance_when_fts5_empty():
 
 async def test_retrieve_respects_top_k_limit_in_fts5_path():
     mock_db = MagicMock()
-    mock_db.search_posts = AsyncMock(return_value=[make_post(i) for i in range(1, 4)])
+    mock_db.search_posts_keywords = AsyncMock(
+        return_value=[make_post(i) for i in range(1, 4)]
+    )
     mock_db.get_all_posts = AsyncMock(return_value=[])
 
-    result = await retrieve_posts(mock_db, "query", top_k=3)
+    result = await retrieve_posts(mock_db, "relevant", top_k=3)
 
-    mock_db.search_posts.assert_awaited_once_with("query", limit=3)
+    mock_db.search_posts_keywords.assert_awaited_once_with("relevant", limit=3)
     assert len(result) <= 3
 
 
 async def test_retrieve_respects_top_k_limit_in_fallback_path():
     mock_db = MagicMock()
-    mock_db.search_posts = AsyncMock(return_value=[])
+    mock_db.search_posts_keywords = AsyncMock(return_value=[])
     mock_db.get_all_posts = AsyncMock(
         return_value=[make_post(i, importance_score=float(i)) for i in range(1, 6)]
     )
 
-    result = await retrieve_posts(mock_db, "query", top_k=2)
+    result = await retrieve_posts(mock_db, "relevant", top_k=2)
 
     assert len(result) <= 2
 
