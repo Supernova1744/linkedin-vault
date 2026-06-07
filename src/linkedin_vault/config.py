@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     def get_db_path(self) -> Path:
         if self.db_path:
             return self.db_path
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         return self.data_dir / "vault.db"
 
     def get_chat_provider(self) -> LLMProvider:
@@ -68,11 +68,17 @@ def load_settings() -> Settings:
     return Settings()
 
 
+def _sanitize_env_value(value: str) -> str:
+    """Strip CR, LF, and NUL — none are valid in a .env value."""
+    return value.replace("\r", "").replace("\n", "").replace("\x00", "")
+
+
 def save_settings_to_file(settings_dict: dict[str, str]) -> None:
     import os
+    import tempfile
 
     env_path = Path.home() / ".linkedin-vault" / ".env"
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     existing: dict[str, str] = {}
     if env_path.exists():
@@ -84,6 +90,20 @@ def save_settings_to_file(settings_dict: dict[str, str]) -> None:
 
     existing.update(settings_dict)
 
-    lines = [f"{k}={v}" for k, v in existing.items()]
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(env_path, 0o600)
+    lines = [f"{k}={_sanitize_env_value(v)}" for k, v in existing.items()]
+    content = "\n".join(lines) + "\n"
+
+    # Atomic write: set permissions on the fd before data is written (no TOCTOU window),
+    # then rename into place so readers never see a half-written file.
+    fd, tmp = tempfile.mkstemp(dir=env_path.parent, prefix=".env.tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, env_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Select, Static
 
 from linkedin_vault.config import LLMProvider, load_settings, save_settings_to_file
+from linkedin_vault.utils.url_validation import validate_ollama_url
 from linkedin_vault.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -189,6 +190,12 @@ class SetupScreen(Screen):
         self._set_status("Fetching Ollama models...")
         ollama_url_input = self.query_one("#ollama-url", Input)
         base_url = ollama_url_input.value.rstrip("/") or "http://localhost:11434"
+        is_valid, warning = validate_ollama_url(base_url)
+        if not is_valid:
+            self._set_status(warning)
+            return
+        if warning:
+            self._set_status(warning)
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{base_url}/api/tags")
@@ -227,11 +234,17 @@ class SetupScreen(Screen):
             to_save["LLM_MODEL"] = model
         else:
             ollama_url = self.query_one("#ollama-url", Input).value.strip()
+            is_valid, warning = validate_ollama_url(ollama_url)
+            if not is_valid:
+                self._set_status(warning)
+                return
             model_select = self.query_one("#ollama-model-select", Select)
             raw = model_select.value
             model = str(raw) if raw and raw != "(none)" else ""
             to_save["OLLAMA_BASE_URL"] = ollama_url
             to_save["LLM_MODEL"] = model
+            if warning:
+                self._set_status(warning)
 
         try:
             save_settings_to_file(to_save)

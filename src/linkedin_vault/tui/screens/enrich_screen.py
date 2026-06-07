@@ -17,7 +17,7 @@ _BAR_WIDTH = 46
 def _render_bar(current: int, total: int) -> str:
     if total <= 0:
         return f"[{'░' * _BAR_WIDTH}]"
-    filled = int(_BAR_WIDTH * current / total)
+    filled = max(0, min(int(_BAR_WIDTH * current / total), _BAR_WIDTH))
     return f"[{'█' * filled}{'░' * (_BAR_WIDTH - filled)}]"
 
 
