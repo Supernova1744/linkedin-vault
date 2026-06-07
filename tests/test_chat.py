@@ -75,6 +75,7 @@ async def chat_client(tmp_path: Path):
 
     app.state.db_path = db_path
     app.state.session_store = SessionStore()
+    app.state.settings = Settings()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -84,6 +85,7 @@ async def chat_client(tmp_path: Path):
     # Prevent stale state from leaking into the next test
     app.state.db_path = None
     app.state.session_store = None
+    app.state.settings = None
 
 
 # ===========================================================================
@@ -425,6 +427,8 @@ async def test_api_delete_chat_unknown_session_still_returns_200(chat_client):
 
 async def test_api_get_settings_returns_correct_field_names_and_types(chat_client):
     client, _ = chat_client
+    from linkedin_vault.dashboard.app import app as _app
+
     test_settings = Settings(
         llm_provider=LLMProvider.ZAI,
         llm_model="glm-4-flash",
@@ -432,9 +436,8 @@ async def test_api_get_settings_returns_correct_field_names_and_types(chat_clien
         chat_model="llama3",
         chat_top_k=10,
     )
-
-    with patch("linkedin_vault.dashboard.app.load_settings", return_value=test_settings):
-        resp = await client.get("/api/settings")
+    _app.state.settings = test_settings
+    resp = await client.get("/api/settings")
 
     assert resp.status_code == 200
     data = resp.json()

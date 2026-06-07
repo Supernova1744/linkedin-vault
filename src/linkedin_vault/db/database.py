@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -231,9 +232,8 @@ class DatabaseManager:
         """
         if not keywords or not keywords.strip():
             return []
-        import re as _re
         # Strip FTS5 special characters to avoid parse errors
-        safe = _re.sub(r'["\(\)\*\^:@]', " ", keywords).strip()
+        safe = re.sub(r'["\(\)\*\^:@]', " ", keywords).strip()
         if not safe:
             return []
         sql = """

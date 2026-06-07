@@ -54,16 +54,14 @@ async def synthesise(
     model = settings.get_chat_model()
     context = _format_context(posts)
 
-    context_msg = (
-        "Here are your saved posts:\n\n"
-        f"<posts>\n{context}\n</posts>\n\n"
-        "Answer the user's question using only the posts above."
+    system_with_context = (
+        f"{SYSTEM_PROMPT}\n\n"
+        "Here are the user's saved posts to use as your knowledge base:\n\n"
+        f"<posts>\n{context}\n</posts>"
     )
 
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": context_msg},
-        {"role": "assistant", "content": "Understood. I'll answer based only on these posts."},
+        {"role": "system", "content": system_with_context},
         *history,
         {"role": "user", "content": question},
     ]

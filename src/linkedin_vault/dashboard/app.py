@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from linkedin_vault.chat.retriever import retrieve_posts
 from linkedin_vault.chat.session import SessionStore
 from linkedin_vault.chat.synthesiser import extract_citation_ids, synthesise
-from linkedin_vault.config import load_settings
+from linkedin_vault.config import Settings, load_settings
 from linkedin_vault.dashboard.schemas import (
     ChatRequest,
     ChatResponse,
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     db = DatabaseManager(db_path)
     await db.initialize_db()
     app.state.session_store = SessionStore()
+    app.state.settings = load_settings()
     yield
 
 
@@ -64,6 +65,16 @@ def get_db(request: Request) -> DatabaseManager:
 
 
 DbDep: TypeAlias = Annotated[DatabaseManager, Depends(get_db)]
+
+
+def get_settings(request: Request) -> Settings:
+    s = getattr(request.app.state, "settings", None)
+    if s is None:
+        s = load_settings()
+    return s
+
+
+SettingsDep: TypeAlias = Annotated[Settings, Depends(get_settings)]
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +195,11 @@ async def delete_post(post_id: int, db: DbDep) -> OkResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(
-    body: ChatRequest, db: DbDep, request: Request
+    body: ChatRequest, db: DbDep, settings: SettingsDep, request: Request
 ) -> ChatResponse:
     if not body.message or not body.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    settings = load_settings()
     top_k = max(1, min(20, settings.chat_top_k))
 
     session_store: SessionStore = request.app.state.session_store
@@ -204,18 +214,20 @@ async def chat_endpoint(
     # Build citations from posts that were actually cited in the answer
     post_map = {p.id: p for p in posts if p.id is not None}
     cited_ids = extract_citation_ids(answer)
-    citations = [
-        CitationResponse(
-            post_id=pid,
-            url=p.url,
-            author_name=p.author_name,
-            excerpt=(p.content or "")[:300],
-            importance_score=p.importance_score,
-            tags=p.tags or [],
-        )
-        for pid in sorted(cited_ids)
-        if (p := post_map.get(pid)) is not None
-    ]
+    citations = []
+    for pid in sorted(cited_ids):
+        p = post_map.get(pid)
+        if p is not None:
+            citations.append(
+                CitationResponse(
+                    post_id=pid,
+                    url=p.url,
+                    author_name=p.author_name,
+                    excerpt=(p.content or "")[:300],
+                    importance_score=p.importance_score,
+                    tags=p.tags or [],
+                )
+            )
 
     session_store.add_turn(session, body.message, answer)
 
@@ -235,8 +247,7 @@ async def clear_chat(session_id: str, request: Request) -> OkResponse:
 
 
 @app.get("/api/settings", response_model=SettingsResponse)
-async def get_settings_route() -> SettingsResponse:
-    settings = load_settings()
+async def get_settings_route(settings: SettingsDep) -> SettingsResponse:
     return SettingsResponse(
         llm_provider=settings.llm_provider.value,
         llm_model=settings.llm_model,

@@ -37,9 +37,7 @@ def _extract_keywords(question: str) -> str:
     """Strip stop/question words and return remaining tokens joined by spaces."""
     tokens = re.findall(r"\b\w+\b", question.lower())
     keywords = [t for t in tokens if t not in _STOP_WORDS and len(t) > 2]
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    unique = [k for k in keywords if not (k in seen or seen.add(k))]  # type: ignore[func-returns-value]
+    unique = list(dict.fromkeys(keywords))
     return " ".join(unique)
 
 
@@ -63,7 +61,7 @@ async def retrieve_posts(db: DatabaseManager, query: str, top_k: int) -> list[Po
     if not posts:
         # Fallback: top-K by importance score so the LLM always has some context
         all_posts = await db.get_all_posts(limit=top_k * 5)
-        all_posts.sort(key=lambda p: p.importance_score or 0.0, reverse=True)
+        all_posts.sort(key=lambda p: p.importance_score if p.importance_score is not None else -1.0, reverse=True)
         posts = all_posts[:top_k]
 
     return posts
