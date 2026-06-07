@@ -7,6 +7,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Footer, RichLog, Static
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -64,7 +65,7 @@ class EnrichScreen(Screen):
         self._current = 0
         self._total = 0
         self._start_time = 0.0
-        self._spinner_timer = None  # type: ignore[assignment]
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("enrich posts", id="title-line")
@@ -74,7 +75,7 @@ class EnrichScreen(Screen):
         yield RichLog(id="log", highlight=True, markup=True, wrap=True)
         yield Footer()
 
-    def check_action(self, action: str, parameters: tuple) -> bool | None:
+    def check_action(self, action: str, parameters: tuple) -> bool | None:  # noqa: ARG002
         if action == "go_back" and self._running:
             return None
         return True
@@ -158,7 +159,8 @@ class EnrichScreen(Screen):
             )
         finally:
             self._running = False
-            self._spinner_timer.stop()
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
             self.refresh_bindings()  # makes esc appear in Footer
 
     def action_go_back(self) -> None:

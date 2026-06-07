@@ -7,6 +7,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Footer, RichLog, Static
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -53,7 +54,7 @@ class ScrapeScreen(Screen):
         self._running = True
         self._spinner_idx = 0
         self._start_time = 0.0
-        self._spinner_timer = None  # type: ignore[assignment]
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("scrape posts", id="title-line")
@@ -103,7 +104,7 @@ class ScrapeScreen(Screen):
             log.write(f"[dim]diagnostic: {diag_file}[/dim]")
             log.write("")
 
-            def on_progress(new_posts: int, _total: int) -> None:
+            def on_progress(new_posts: int, _: int) -> None:
                 log.write(f"  [dim]saved {new_posts} new post(s)…[/dim]")
 
             result = await run_scrape(
@@ -148,7 +149,8 @@ class ScrapeScreen(Screen):
             )
         finally:
             self._running = False
-            self._spinner_timer.stop()
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
             self.refresh_bindings()  # triggers Footer to re-render with esc visible
 
     def action_go_back(self) -> None:

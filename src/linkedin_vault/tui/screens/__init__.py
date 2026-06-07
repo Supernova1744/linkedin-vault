@@ -1,4 +1,5 @@
-from linkedin_vault.tui.screens.config_wizard import ConfigWizardScreen
-from linkedin_vault.tui.screens.welcome import WelcomeScreen
+from linkedin_vault.tui.screens.home_screen import HomeScreen
+from linkedin_vault.tui.screens.settings_screen import SettingsScreen
+from linkedin_vault.tui.screens.setup_screen import SetupScreen
 
-__all__ = ["ConfigWizardScreen", "WelcomeScreen"]
+__all__ = ["HomeScreen", "SettingsScreen", "SetupScreen"]
