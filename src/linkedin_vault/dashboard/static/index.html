@@ -546,9 +546,11 @@ function renderCitations(citations) {
   citations.forEach(c => {
     const card = document.createElement('a');
     card.className = 'chat-citation-card';
-    card.href = c.url;
-    card.target = '_blank';
-    card.rel = 'noopener';
+    if (/^https?:\/\//i.test(c.url)) {
+      card.href = c.url;
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+    }
 
     const score = c.importance_score != null
       ? `<span class="citation-score">${c.importance_score.toFixed(1)}</span>`

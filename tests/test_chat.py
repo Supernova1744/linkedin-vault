@@ -21,8 +21,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from linkedin_vault.chat.retriever import retrieve_posts
-from linkedin_vault.chat.session import MAX_HISTORY_TURNS, ChatSession, SessionStore
+from linkedin_vault.chat.retriever import _extract_keywords, retrieve_posts
+from linkedin_vault.chat.session import MAX_HISTORY_TURNS, MAX_SESSIONS, ChatSession, SessionStore
 from linkedin_vault.chat.synthesiser import (
     _call_ollama,
     _call_zai,
@@ -161,6 +161,30 @@ class TestSessionStore:
         all_contents = {m["content"] for m in session.messages}
         assert "user-0" not in all_contents
         assert "assistant-0" not in all_contents
+
+    def test_evicts_oldest_session_when_max_reached(self):
+        """Once MAX_SESSIONS is hit, the next create must evict the oldest entry."""
+        store = SessionStore()
+
+        # Fill the store to exactly MAX_SESSIONS sessions and capture the first id.
+        first_id: str | None = None
+        for _ in range(MAX_SESSIONS):
+            s = store.get_or_create(None)
+            if first_id is None:
+                first_id = s.session_id
+
+        assert first_id is not None  # sanity
+
+        # One more call should trigger eviction of the oldest (first) session.
+        store.get_or_create(None)
+
+        # The store must still be capped at MAX_SESSIONS — no unbounded growth.
+        assert len(store._sessions) == MAX_SESSIONS
+
+        # Looking up the original first_id must produce a BRAND-NEW session,
+        # confirming the original was evicted rather than re-used.
+        recovered = store.get_or_create(first_id)
+        assert recovered.session_id != first_id
 
 
 # ===========================================================================
@@ -538,3 +562,97 @@ async def test_synthesiser_call_ollama_raises_llm_provider_error_on_connect_erro
 
         with pytest.raises(LLMProviderError, match="Ollama not reachable"):
             await _call_ollama(messages, model, settings)
+
+
+# ===========================================================================
+# 7. _extract_keywords unit tests
+# ===========================================================================
+
+
+class TestExtractKeywords:
+    def test_strips_stop_words(self):
+        result = _extract_keywords("what posts do you have about python")
+        tokens = result.split()
+        assert "what" not in tokens
+        assert "do" not in tokens
+        assert "you" not in tokens
+        assert "have" not in tokens
+        assert "about" not in tokens
+        assert "python" in tokens
+
+    def test_strips_short_tokens(self):
+        # "AI" and "ML" are each 2 chars — the filter requires len(t) > 2
+        result = _extract_keywords("AI ML")
+        assert result == ""
+
+    def test_deduplication_preserves_order(self):
+        result = _extract_keywords("python machine python learning")
+        # Second occurrence of "python" must be dropped; remaining order preserved
+        assert result == "python machine learning"
+
+    def test_empty_string_returns_empty(self):
+        assert _extract_keywords("") == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert _extract_keywords("   ") == ""
+
+    def test_mixed_case_normalised(self):
+        result = _extract_keywords("Python Django REST")
+        tokens = result.split()
+        assert "python" in tokens
+        assert "django" in tokens
+        assert "rest" in tokens
+
+    def test_question_filler_stripped(self):
+        result = _extract_keywords("show me posts about machine learning")
+        tokens = result.split()
+        assert "show" not in tokens   # in _STOP_WORDS
+        assert "posts" not in tokens  # in _STOP_WORDS
+        assert "machine" in tokens
+        assert "learning" in tokens
+
+
+# ===========================================================================
+# 8. search_posts_keywords FTS5 integration tests (real SQLite, no mocks)
+# ===========================================================================
+
+
+async def test_search_posts_keywords_finds_matching_content(tmp_path: Path):
+    """FTS5 must return only the two posts whose content contains 'python'."""
+    db = DatabaseManager(tmp_path / "test.db")
+    await db.initialize_db()
+
+    await db.upsert_post(make_post(1, content="Python machine learning tutorial", author_name="Alice"))
+    await db.upsert_post(make_post(2, content="JavaScript frontend development", author_name="Bob"))
+    await db.upsert_post(make_post(3, content="Python web frameworks Django Flask", author_name="Carol"))
+
+    results = await db.search_posts_keywords("python", limit=10)
+
+    assert len(results) == 2
+    author_names = {r.author_name for r in results}
+    assert author_names == {"Alice", "Carol"}
+
+
+async def test_search_posts_keywords_returns_empty_on_no_match(tmp_path: Path):
+    """A keyword not present in any post must return an empty list, not an error."""
+    db = DatabaseManager(tmp_path / "test.db")
+    await db.initialize_db()
+
+    await db.upsert_post(make_post(1, content="Python machine learning tutorial", author_name="Alice"))
+    await db.upsert_post(make_post(2, content="JavaScript frontend development", author_name="Bob"))
+    await db.upsert_post(make_post(3, content="Python web frameworks Django Flask", author_name="Carol"))
+
+    results = await db.search_posts_keywords("kubernetes", limit=10)
+
+    assert results == []
+
+
+async def test_search_posts_keywords_handles_fts5_special_chars_without_crashing(tmp_path: Path):
+    """FTS5 special characters in the keyword string must not raise an exception."""
+    db = DatabaseManager(tmp_path / "test.db")
+    await db.initialize_db()
+
+    # No posts needed — we are testing that the sanitisation path does not crash.
+    result = await db.search_posts_keywords('"quoted" AND (nested) *wildcard^', limit=10)
+
+    assert isinstance(result, list)
