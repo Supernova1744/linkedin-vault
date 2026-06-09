@@ -50,8 +50,7 @@ coverage.xml
 playwright-report/
 test-results/
 
-# LinkedIn Vault data directory is user-local — never commit
-~/.linkedin-vault/
+# ~/.linkedin-vault/ is the user data directory (outside repo tree — git never sees it)
 
 # LinkedIn browser session cookies/storage (stored in data_dir — never commit)
 session.json

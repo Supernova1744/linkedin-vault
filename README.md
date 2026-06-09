@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="assets/banner.png" alt="LinkedIn Vault banner" width="800" />
+
 [![CI](https://github.com/Supernova1744/linkedin-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/Supernova1744/linkedin-vault/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/github/license/Supernova1744/linkedin-vault)](LICENSE)
