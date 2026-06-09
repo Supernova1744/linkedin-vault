@@ -9,7 +9,6 @@
 [![License: MIT](https://img.shields.io/github/license/Supernova1744/linkedin-vault)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![GitHub Stars](https://img.shields.io/github/stars/Supernova1744/linkedin-vault?style=social)](https://github.com/Supernova1744/linkedin-vault/stargazers)
-[![Issues](https://img.shields.io/github/issues/Supernova1744/linkedin-vault)](https://github.com/Supernova1744/linkedin-vault/issues)
 
 **Turn your LinkedIn saved posts into a searchable, prioritized knowledge base.**
 
