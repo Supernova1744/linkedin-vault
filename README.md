@@ -125,8 +125,6 @@ The dashboard provides:
 Sign up at [api.z.ai](https://api.z.ai) and set `ZAI_API_KEY` in your `.env`.
 Post content is sent to z.ai's servers for analysis.
 
-Recommended model: `glm-4-flash` (fast and cost-effective).
-
 ### Ollama (fully local)
 
 Install [Ollama](https://ollama.ai), pull a model, and start the server:
