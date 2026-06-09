@@ -1,3 +1,21 @@
+"""FastAPI application for the LinkedIn Vault web dashboard.
+
+Routes:
+  GET  /                     Serve the single-page frontend (index.html)
+  GET  /api/posts            Paginated post listing with FTS5 search and filters
+  GET  /api/posts/{id}       Single post by database ID
+  PATCH /api/posts/{id}/status  Update read/skipped/saved-later status
+  DELETE /api/posts/{id}     Permanently remove a post
+  GET  /api/stats            Vault-wide statistics
+  GET  /api/tags             All unique tags across enriched posts
+  POST /api/chat             Send a message; returns an LLM answer with citations
+  DELETE /api/chat/{session} Clear a chat session
+  GET  /api/settings         Current provider and model configuration
+
+The app is served by uvicorn; see :mod:`linkedin_vault.dashboard.server` for
+the launch helpers used by both the CLI and the TUI.
+"""
+
 import math
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -209,7 +227,7 @@ async def chat_endpoint(
         posts = await retrieve_posts(db, body.message, top_k)
         answer = await synthesise(body.message, posts, session.messages, settings)
     except LLMProviderError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # Build citations from posts that were actually cited in the answer
     post_map = {p.id: p for p in posts if p.id is not None}

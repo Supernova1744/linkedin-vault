@@ -118,9 +118,7 @@ class ZAIProvider(BaseLLMProvider):
                 raise TransientLLMError(f"z.ai request timed out: {exc}") from exc
 
             if response.status_code in RETRYABLE_STATUS_CODES:
-                raise TransientLLMError(
-                    f"Transient HTTP {response.status_code} from z.ai"
-                )
+                raise TransientLLMError(f"Transient HTTP {response.status_code} from z.ai")
             if response.status_code >= 400:
                 raise LLMProviderError(
                     f"HTTP {response.status_code} from z.ai: {response.text[:200]}"

@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -6,8 +7,16 @@ from pydantic import ValidationError
 from linkedin_vault.config import LLMProvider, Settings, load_settings, save_settings_to_file
 
 
-def test_settings_defaults() -> None:
-    s = Settings()
+def test_settings_defaults(tmp_path: Path) -> None:
+    # _USER_ENV is frozen into model_config at import time as the literal path
+    # to ~/,linkedin-vault/.env, so patching Path.home at runtime has no effect
+    # on Settings(). Instead we redirect env_file to a nonexistent tmp path so
+    # neither the project-local .env nor the real user .env is loaded.
+    with patch.dict(
+        "linkedin_vault.config.Settings.model_config",
+        {"env_file": str(tmp_path / ".env")},
+    ):
+        s = Settings()
     assert s.app_name == "LinkedIn Vault"
     assert s.llm_provider == LLMProvider.ZAI
     assert s.dashboard_port == 8765

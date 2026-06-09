@@ -10,7 +10,7 @@ Be respectful and constructive in all interactions.
 
 ## Reporting Bugs
 
-Open a [GitHub Issue](https://github.com/your-username/linkedin-vault/issues/new?template=bug_report.md)
+Open a [GitHub Issue](https://github.com/Supernova1744/linkedin-vault/issues/new?template=bug_report.md)
 and fill in the bug report template. Include:
 
 - Your OS and Python version
@@ -20,7 +20,7 @@ and fill in the bug report template. Include:
 
 ## Proposing Features
 
-Open a [GitHub Issue](https://github.com/your-username/linkedin-vault/issues/new?template=feature_request.md)
+Open a [GitHub Issue](https://github.com/Supernova1744/linkedin-vault/issues/new?template=feature_request.md)
 using the feature request template. Describe the use case clearly — "I want to do X because Y" is
 more useful than "add feature Z."
 
@@ -32,7 +32,7 @@ a PR is opened. This avoids wasted work if the direction doesn't fit the project
 Requirements: Python 3.11+, git.
 
 ```bash
-git clone https://github.com/your-username/linkedin-vault.git
+git clone https://github.com/Supernova1744/linkedin-vault.git
 cd linkedin-vault
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate

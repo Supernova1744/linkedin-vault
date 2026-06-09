@@ -200,13 +200,9 @@ async def test_zai_provider_list_models_success() -> None:
 
 async def test_ollama_provider_list_models_connection_error() -> None:
     """A ConnectError must be converted to LLMProviderError('Ollama is not running')."""
-    mock_client = _make_async_client_mock(
-        side_effect=httpx.ConnectError("Connection refused")
-    )
+    mock_client = _make_async_client_mock(side_effect=httpx.ConnectError("Connection refused"))
 
-    with patch(
-        "linkedin_vault.enricher.ollama.httpx.AsyncClient", return_value=mock_client
-    ):
+    with patch("linkedin_vault.enricher.ollama.httpx.AsyncClient", return_value=mock_client):
         provider = OllamaProvider(base_url="http://localhost:11434")
         with pytest.raises(LLMProviderError, match="Ollama is not running"):
             await provider.list_models()
@@ -217,9 +213,7 @@ async def test_ollama_provider_list_models_success() -> None:
     response_data = {"models": [{"name": "llama3.2"}, {"name": "mistral"}]}
     mock_client = _make_async_client_mock(status_code=200, response_json=response_data)
 
-    with patch(
-        "linkedin_vault.enricher.ollama.httpx.AsyncClient", return_value=mock_client
-    ):
+    with patch("linkedin_vault.enricher.ollama.httpx.AsyncClient", return_value=mock_client):
         provider = OllamaProvider(base_url="http://localhost:11434")
         result = await provider.list_models()
 
@@ -261,9 +255,7 @@ def test_get_provider_returns_ollama(tmp_path: Path) -> None:
 
 def test_parse_enrichment_response_null_tags_raises_value_error() -> None:
     """tags: null must raise ValueError (was TypeError before the fix)."""
-    raw = json.dumps(
-        {"summary": "x", "tags": None, "importance_score": 5.0, "is_outdated": False}
-    )
+    raw = json.dumps({"summary": "x", "tags": None, "importance_score": 5.0, "is_outdated": False})
     with pytest.raises(ValueError, match="tags"):
         parse_enrichment_response(raw)
 
@@ -301,9 +293,7 @@ def test_parse_enrichment_response_tags_filtered_to_allowed() -> None:
 
 def test_parse_enrichment_response_tags_not_a_list_raises() -> None:
     """tags must be a list; a bare string value must raise ValueError."""
-    raw = json.dumps(
-        {"summary": "x", "tags": "AI", "importance_score": 5.0, "is_outdated": False}
-    )
+    raw = json.dumps({"summary": "x", "tags": "AI", "importance_score": 5.0, "is_outdated": False})
     with pytest.raises(ValueError, match="list"):
         parse_enrichment_response(raw)
 

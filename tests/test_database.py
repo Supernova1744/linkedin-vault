@@ -6,9 +6,10 @@ from linkedin_vault.db.database import DatabaseManager
 from linkedin_vault.db.models import Post, SyncState, VaultStats
 
 
-async def test_initialize_db_creates_tables(_db: DatabaseManager, tmp_db_path: Path) -> None:
+async def test_initialize_db_creates_tables(db: DatabaseManager, tmp_db_path: Path) -> None:
     assert tmp_db_path.exists()
     import aiosqlite
+
     async with aiosqlite.connect(tmp_db_path) as conn:
         cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -267,9 +268,7 @@ async def test_delete_post(db: DatabaseManager, sample_post: Post) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_upsert_preserves_status_on_re_scrape(
-    db: DatabaseManager, sample_post: Post
-) -> None:
+async def test_upsert_preserves_status_on_re_scrape(db: DatabaseManager, sample_post: Post) -> None:
     """Re-upserting a post (as happens on re-scrape) must not reset a non-default status."""
     row_id = await db.upsert_post(sample_post)
     await db.update_post_status(row_id, "read")
@@ -404,9 +403,7 @@ async def test_get_posts_for_enrichment_unenriched_only(
     assert posts[0].linkedin_id == sample_post.linkedin_id
 
 
-async def test_get_posts_for_enrichment_all(
-    db: DatabaseManager, sample_post: Post
-) -> None:
+async def test_get_posts_for_enrichment_all(db: DatabaseManager, sample_post: Post) -> None:
     """re_enrich=True returns all posts regardless of enriched_at."""
     await db.upsert_post(sample_post)  # unenriched
 
@@ -435,9 +432,7 @@ async def test_get_post_by_linkedin_id_not_found(db: DatabaseManager) -> None:
     assert result is None
 
 
-async def test_update_post_status_all_statuses(
-    db: DatabaseManager, sample_post: Post
-) -> None:
+async def test_update_post_status_all_statuses(db: DatabaseManager, sample_post: Post) -> None:
     """All four valid status values can be round-tripped through update_post_status."""
     row_id = await db.upsert_post(sample_post)
     for status in ("unread", "read", "skipped", "saved_later"):

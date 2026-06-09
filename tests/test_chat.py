@@ -34,7 +34,6 @@ from linkedin_vault.db.database import DatabaseManager
 from linkedin_vault.db.models import Post
 from linkedin_vault.enricher.base import LLMProviderError
 
-
 # ---------------------------------------------------------------------------
 # Shared helper
 # ---------------------------------------------------------------------------
@@ -77,9 +76,7 @@ async def chat_client(tmp_path: Path):
     app.state.session_store = SessionStore()
     app.state.settings = Settings()
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, db
 
     # Prevent stale state from leaking into the next test
@@ -218,8 +215,11 @@ async def test_retrieve_falls_back_to_importance_when_fts5_empty():
 
     result = await retrieve_posts(mock_db, "obscure query", top_k=3)
 
-    mock_db.search_posts_keywords.assert_awaited_once()
-    # Fallback fetches top_k * 5 to have a large pool to sort from
+    # AND search + OR fallback — both return empty, so get_all_posts is the final resort
+    assert mock_db.search_posts_keywords.await_count == 2
+    calls = [str(c) for c in mock_db.search_posts_keywords.call_args_list]
+    assert any("obscure OR query" in c for c in calls), f"OR call not found in {calls}"
+    # Importance-score fallback fetches top_k * 5
     mock_db.get_all_posts.assert_awaited_once_with(limit=15)
     # Must be sorted descending by importance_score
     assert result[0].id == 2  # score 9.0
@@ -229,9 +229,7 @@ async def test_retrieve_falls_back_to_importance_when_fts5_empty():
 
 async def test_retrieve_respects_top_k_limit_in_fts5_path():
     mock_db = MagicMock()
-    mock_db.search_posts_keywords = AsyncMock(
-        return_value=[make_post(i) for i in range(1, 4)]
-    )
+    mock_db.search_posts_keywords = AsyncMock(return_value=[make_post(i) for i in range(1, 4)])
     mock_db.get_all_posts = AsyncMock(return_value=[])
 
     result = await retrieve_posts(mock_db, "relevant", top_k=3)
@@ -580,10 +578,19 @@ class TestExtractKeywords:
         assert "about" not in tokens
         assert "python" in tokens
 
-    def test_strips_short_tokens(self):
-        # "AI" and "ML" are each 2 chars — the filter requires len(t) > 2
+    def test_keeps_meaningful_short_tokens(self):
+        # "ai" and "ml" are 2 chars — minimum length is >= 2 so they are kept
         result = _extract_keywords("AI ML")
-        assert result == ""
+        tokens = result.split()
+        assert "ai" in tokens
+        assert "ml" in tokens
+
+    def test_strips_single_char_tokens(self):
+        # Single-char tokens (len < 2) are always stripped
+        result = _extract_keywords("x y z python")
+        tokens = result.split()
+        assert "x" not in tokens
+        assert "python" in tokens
 
     def test_deduplication_preserves_order(self):
         result = _extract_keywords("python machine python learning")
@@ -606,7 +613,7 @@ class TestExtractKeywords:
     def test_question_filler_stripped(self):
         result = _extract_keywords("show me posts about machine learning")
         tokens = result.split()
-        assert "show" not in tokens   # in _STOP_WORDS
+        assert "show" not in tokens  # in _STOP_WORDS
         assert "posts" not in tokens  # in _STOP_WORDS
         assert "machine" in tokens
         assert "learning" in tokens
@@ -622,9 +629,13 @@ async def test_search_posts_keywords_finds_matching_content(tmp_path: Path):
     db = DatabaseManager(tmp_path / "test.db")
     await db.initialize_db()
 
-    await db.upsert_post(make_post(1, content="Python machine learning tutorial", author_name="Alice"))
+    await db.upsert_post(
+        make_post(1, content="Python machine learning tutorial", author_name="Alice")
+    )
     await db.upsert_post(make_post(2, content="JavaScript frontend development", author_name="Bob"))
-    await db.upsert_post(make_post(3, content="Python web frameworks Django Flask", author_name="Carol"))
+    await db.upsert_post(
+        make_post(3, content="Python web frameworks Django Flask", author_name="Carol")
+    )
 
     results = await db.search_posts_keywords("python", limit=10)
 
@@ -638,9 +649,13 @@ async def test_search_posts_keywords_returns_empty_on_no_match(tmp_path: Path):
     db = DatabaseManager(tmp_path / "test.db")
     await db.initialize_db()
 
-    await db.upsert_post(make_post(1, content="Python machine learning tutorial", author_name="Alice"))
+    await db.upsert_post(
+        make_post(1, content="Python machine learning tutorial", author_name="Alice")
+    )
     await db.upsert_post(make_post(2, content="JavaScript frontend development", author_name="Bob"))
-    await db.upsert_post(make_post(3, content="Python web frameworks Django Flask", author_name="Carol"))
+    await db.upsert_post(
+        make_post(3, content="Python web frameworks Django Flask", author_name="Carol")
+    )
 
     results = await db.search_posts_keywords("kubernetes", limit=10)
 

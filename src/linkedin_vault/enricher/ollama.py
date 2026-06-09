@@ -53,18 +53,12 @@ class OllamaProvider(BaseLLMProvider):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self._base_url}/api/tags")
         except httpx.ConnectError as exc:
-            raise LLMProviderError(
-                f"Ollama is not running at {self._base_url}"
-            ) from exc
+            raise LLMProviderError(f"Ollama is not running at {self._base_url}") from exc
         except httpx.TimeoutException as exc:
-            raise LLMProviderError(
-                f"Ollama did not respond at {self._base_url}: {exc}"
-            ) from exc
+            raise LLMProviderError(f"Ollama did not respond at {self._base_url}: {exc}") from exc
 
         if response.status_code >= 400:
-            raise LLMProviderError(
-                f"HTTP {response.status_code} from Ollama /api/tags"
-            )
+            raise LLMProviderError(f"HTTP {response.status_code} from Ollama /api/tags")
 
         data = response.json()
         return [m["name"] for m in data.get("models", [])]
@@ -102,16 +96,12 @@ class OllamaProvider(BaseLLMProvider):
                 async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                     response = await client.post(url, json=payload)
             except httpx.ConnectError as exc:
-                raise LLMProviderError(
-                    f"Ollama is not running at {self._base_url}"
-                ) from exc
+                raise LLMProviderError(f"Ollama is not running at {self._base_url}") from exc
             except httpx.TimeoutException as exc:
                 raise TransientLLMError(f"Ollama request timed out: {exc}") from exc
 
             if response.status_code in RETRYABLE_STATUS_CODES:
-                raise TransientLLMError(
-                    f"Transient HTTP {response.status_code} from Ollama"
-                )
+                raise TransientLLMError(f"Transient HTTP {response.status_code} from Ollama")
             if response.status_code >= 400:
                 raise LLMProviderError(
                     f"HTTP {response.status_code} from Ollama: {response.text[:200]}"

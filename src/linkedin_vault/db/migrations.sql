@@ -58,7 +58,16 @@ CREATE TABLE IF NOT EXISTS sync_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_scraped_at TEXT,
     total_posts_scraped INTEGER DEFAULT 0,
-    last_sync_duration_seconds REAL
+    last_sync_duration_seconds REAL,
+    last_scrape_was_complete INTEGER DEFAULT 0
 );
 
 INSERT OR IGNORE INTO sync_state (id) VALUES (1);
+
+-- Persistent chat history (up to 400 turns retained, pruned on insert)
+CREATE TABLE IF NOT EXISTS chat_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

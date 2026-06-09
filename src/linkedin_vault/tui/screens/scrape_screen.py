@@ -1,157 +1,110 @@
 from __future__ import annotations
 
-import time
+from collections.abc import Iterable
 from typing import ClassVar
 
 from textual import work
-from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.screen import Screen
-from textual.timer import Timer
-from textual.widgets import Footer, RichLog, Static
+from textual.widget import Widget
+from textual.widgets import RichLog
 
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-_CSS = """
-ScrapeScreen {
-    background: $surface;
-}
-
-#title-line {
-    color: $text-muted;
-    padding: 0 2;
-    height: 1;
-}
-
-.separator {
-    color: $text-muted;
-    height: 1;
-}
-
-#run-indicator {
-    padding: 0 2;
-    color: $text-muted;
-    height: 1;
-}
-
-#log {
-    height: 1fr;
-    padding: 0 2;
-    background: $surface;
-}
-"""
+from linkedin_vault.tui.vault_screen import VaultScreen
 
 
-class ScrapeScreen(Screen):
+class ScrapeScreen(VaultScreen):
+    SCREEN_TITLE = "Scrape Posts"
+    BOTTOM_HINTS = "  [#CC785C]esc[/#CC785C] Back"
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "go_back", "Back"),
     ]
 
-    DEFAULT_CSS = _CSS
+    DEFAULT_CSS = """
+    ScrapeScreen #log { height: 1fr; border: none; padding: 0 2; }
+    """
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._running = True
-        self._spinner_idx = 0
-        self._start_time = 0.0
-        self._spinner_timer: Timer | None = None
-
-    def compose(self) -> ComposeResult:
-        yield Static("scrape posts", id="title-line")
-        yield Static("─" * 80, classes="separator")
-        yield Static("  ⠋ running…", id="run-indicator")
-        yield Static("─" * 80, classes="separator")
+    def compose_content(self) -> Iterable[Widget]:
         yield RichLog(id="log", highlight=True, markup=True, wrap=True)
-        yield Footer()
-
-    def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Return None (not False) so the binding is HIDDEN (not dimmed) during run
-        if action == "go_back" and self._running:
-            return None
-        return True
 
     def on_mount(self) -> None:
-        self._start_time = time.monotonic()
-        self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
-        self._run_scrape()
+        log = self.query_one(RichLog)
+        self._run_scrape(log)
 
-    def _tick_spinner(self) -> None:
-        if not self._running:
-            return
-        self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
-        frame = _SPINNER_FRAMES[self._spinner_idx]
-        try:
-            self.query_one("#run-indicator", Static).update(f"  {frame} running…")
-        except Exception:
-            pass
+    @work(thread=True)
+    def _run_scrape(self, log: RichLog) -> None:
+        import asyncio
 
-    @work
-    async def _run_scrape(self) -> None:
         from linkedin_vault.config import load_settings
         from linkedin_vault.db.database import DatabaseManager
+        from linkedin_vault.scraper.browser import LinkedInSessionExpiredError
         from linkedin_vault.scraper.runner import run_scrape
 
-        log = self.query_one(RichLog)
-        log.write("[dim]loading settings…[/dim]")
+        def _log(msg: str) -> None:
+            self.app.call_from_thread(log.write, msg)
+
+        _log("[dim]Loading settings…[/dim]")
+
+        settings = load_settings()
+        db = DatabaseManager(settings.get_db_path())
+
+        asyncio.run(db.initialize_db())
+        sync_state = asyncio.run(db.get_sync_state())
+        is_complete = sync_state.last_scrape_was_complete
+
+        if is_complete:
+            _log("[dim]Mode: fast incremental sync (checking for new posts only)[/dim]")
+        else:
+            _log("[bold yellow]Full scan mode[/bold yellow] — previous scrape was incomplete.")
+            _log(
+                "[dim]Scanning the entire feed to recover any missed posts."
+                " This may take longer.[/dim]"
+            )
+            _log("[dim]Do not close the app during this scan.[/dim]")
+        _log("")
+        _log("[dim]Starting headless browser…[/dim]")
+        _log("")
+
+        def on_progress(new_posts: int, _: int) -> None:
+            _log(f"  [dim]Saved {new_posts} new post(s)…[/dim]")
 
         try:
-            settings = load_settings()
-            db = DatabaseManager(settings.get_db_path())
-
-            from pathlib import Path
-            diag_file = Path.home() / ".linkedin-vault" / "debug_diagnostic.txt"
-            log.write("[dim]opening browser — log in to LinkedIn if prompted.[/dim]")
-            log.write(f"[dim]diagnostic: {diag_file}[/dim]")
-            log.write("")
-
-            def on_progress(new_posts: int, _: int) -> None:
-                log.write(f"  [dim]saved {new_posts} new post(s)…[/dim]")
-
-            result = await run_scrape(
-                settings=settings,
-                db=db,
-                headless=False,
-                progress_callback=on_progress,
+            result = asyncio.run(
+                run_scrape(
+                    settings=settings,
+                    db=db,
+                    headless=True,
+                    progress_callback=on_progress,
+                    status_callback=_log,
+                )
             )
-            log.write("")
-            elapsed = time.monotonic() - self._start_time
+            _log("")
             if result.new_posts == 0 and result.skipped_existing == 0:
-                log.write("[bold]⚠ scrape finished with 0 posts found.[/bold]")
-                log.write("")
-                log.write("possible causes:")
-                log.write("  · linkedin changed their page structure (selectors need updating)")
-                log.write("  · you are not logged in / session expired")
-                log.write("  · the saved posts page is genuinely empty")
-                from pathlib import Path
-                screenshot = Path.home() / ".linkedin-vault" / "debug_screenshot.png"
-                if screenshot.exists():
-                    log.write("")
-                    log.write(f"[dim]debug screenshot: {screenshot}[/dim]")
-                self.query_one("#run-indicator", Static).update(
-                    f"  done  ·  {result.new_posts} new  ·  {result.skipped_existing} skipped"
-                    f"  ·  {result.failed_extractions} failed  ·  {elapsed:.1f}s"
-                )
+                _log("[bold yellow]⚠ Scrape finished with 0 posts found.[/bold yellow]")
+                _log("")
+                _log("Possible causes:")
+                _log("  • LinkedIn changed their page structure (selectors need updating)")
+                _log("  • Session expired — use the Login option on the welcome screen")
+                _log("  • The saved posts page is genuinely empty")
             else:
-                log.write("[bold]✓ scrape complete![/bold]")
-                log.write(f"  new posts saved:     [bold]{result.new_posts}[/bold]")
-                log.write(f"  already in DB:       {result.skipped_existing}")
-                log.write(f"  failed extractions:  {result.failed_extractions}")
-                log.write(f"  duration:            {elapsed:.1f}s")
-                self.query_one("#run-indicator", Static).update(
-                    f"  done  ·  {result.new_posts} new  ·  {result.skipped_existing} skipped"
-                    f"  ·  {result.failed_extractions} failed  ·  {elapsed:.1f}s"
-                )
+                _log("[bold green]✓ Scrape complete![/bold green]")
+                if result.scrape_mode == "full_scan":
+                    if result.new_posts > 0:
+                        _log("  Mode: full scan — vault is now complete")
+                    else:
+                        _log("  Mode: full scan — no missed posts found")
+                else:
+                    _log("  Mode: fast sync")
+            _log(f"  New posts saved:     [bold]{result.new_posts}[/bold]")
+            _log(f"  Already in DB:       {result.skipped_existing}")
+            _log(f"  Failed extractions:  {result.failed_extractions}")
+            _log(f"  Duration:            {result.duration_seconds:.1f}s")
+        except LinkedInSessionExpiredError:
+            _log("")
+            _log("[bold yellow]⚠ LinkedIn session expired.[/bold yellow]")
+            _log("")
+            _log("Go back and press [bold]l[/bold] to login to LinkedIn, then scrape again.")
         except Exception as exc:
-            elapsed = time.monotonic() - self._start_time
-            log.write(f"[bold red]error:[/bold red] {exc}")
-            self.query_one("#run-indicator", Static).update(
-                f"  error  ·  {elapsed:.1f}s"
-            )
-        finally:
-            self._running = False
-            if self._spinner_timer is not None:
-                self._spinner_timer.stop()
-            self.refresh_bindings()  # triggers Footer to re-render with esc visible
+            _log(f"[bold red]Error:[/bold red] {exc}")
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

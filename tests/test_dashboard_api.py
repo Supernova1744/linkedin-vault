@@ -28,9 +28,7 @@ async def db_client(tmp_path: Path):
     # Inject the test db_path into app state; the lifespan will pick it up
     app.state.db_path = db_path
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, db
 
     app.state.db_path = None  # prevent stale path from leaking to the next test

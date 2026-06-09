@@ -1,3 +1,12 @@
+"""Logging configuration helpers for LinkedIn Vault.
+
+Call :func:`configure_logging` once at startup to set up Rich-formatted
+logging with the requested log level.  Subsequent calls are no-ops (guarded
+by the ``_configured`` flag) so it is safe to call from multiple entry points.
+
+Use :func:`get_logger` everywhere else to obtain a standard :class:`logging.Logger`.
+"""
+
 import logging
 
 from rich.console import Console

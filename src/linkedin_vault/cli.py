@@ -1,3 +1,14 @@
+"""Typer CLI entry point for LinkedIn Vault.
+
+Commands:
+  tui        Launch the interactive Textual TUI
+  scrape     Scrape LinkedIn saved posts via Playwright
+  enrich     Enrich saved posts with LLM analysis
+  models     List available models for the configured LLM provider
+  dashboard  Start the web dashboard
+  stats      Print database statistics
+"""
+
 import asyncio
 
 import typer
@@ -43,9 +54,7 @@ def scrape(
 
     console.print("[bold blue]LinkedIn Vault — Scrape[/bold blue]")
     if not headless:
-        console.print(
-            "[dim]A browser window will open. Log in to LinkedIn if prompted.[/dim]"
-        )
+        console.print("[dim]A browser window will open. Log in to LinkedIn if prompted.[/dim]")
 
     async def _run() -> ScrapeResult:
         def _on_progress(new_posts: int, _total: int) -> None:
@@ -59,8 +68,17 @@ def scrape(
             progress_callback=_on_progress,
         )
 
+    from linkedin_vault.scraper.browser import LinkedInSessionExpiredError
+
     with console.status("[bold green]Scraping saved posts…[/bold green]", spinner="dots"):
-        result = asyncio.run(_run())
+        try:
+            result = asyncio.run(_run())
+        except LinkedInSessionExpiredError as exc:
+            console.print(f"[bold red]Session expired:[/bold red] {exc}")
+            console.print(
+                "[dim]Run without --headless to log in, or use 'linkedin-vault tui' → Login.[/dim]"
+            )
+            raise SystemExit(1) from exc
 
     table = Table(title="Scrape Complete", show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="bold")
@@ -75,9 +93,7 @@ def scrape(
 @app.command()
 def enrich(
     limit: int | None = typer.Option(None, "--limit", "-n", help="Max posts to enrich"),
-    re_enrich: bool = typer.Option(
-        False, "--re-enrich", help="Re-enrich already-enriched posts"
-    ),
+    re_enrich: bool = typer.Option(False, "--re-enrich", help="Re-enrich already-enriched posts"),
 ) -> None:
     """Enrich scraped posts with LLM analysis."""
     from linkedin_vault.enricher.runner import EnrichmentRunResult, run_enrichment
@@ -94,9 +110,7 @@ def enrich(
         raise typer.Exit(1)
 
     console.print("[bold blue]LinkedIn Vault — Enrich[/bold blue]")
-    console.print(
-        f"[dim]Provider: {settings.llm_provider}  Model: {settings.llm_model}[/dim]"
-    )
+    console.print(f"[dim]Provider: {settings.llm_provider}  Model: {settings.llm_model}[/dim]")
 
     async def _run() -> EnrichmentRunResult:
         def _on_progress(current: int, total: int) -> None:
@@ -143,9 +157,7 @@ def models() -> None:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
-    console.print(
-        f"[bold blue]Available models ({settings.llm_provider}):[/bold blue]"
-    )
+    console.print(f"[bold blue]Available models ({settings.llm_provider}):[/bold blue]")
     for m in model_list:
         marker = " [bold yellow]*[/bold yellow]" if m == settings.llm_model else ""
         console.print(f"  {m}{marker}")

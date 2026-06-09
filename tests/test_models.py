@@ -33,7 +33,10 @@ def test_post_default_status() -> None:
 
 def test_post_valid_statuses() -> None:
     all_statuses = (
-        POST_STATUS_UNREAD, POST_STATUS_READ, POST_STATUS_SKIPPED, POST_STATUS_SAVED_LATER
+        POST_STATUS_UNREAD,
+        POST_STATUS_READ,
+        POST_STATUS_SKIPPED,
+        POST_STATUS_SAVED_LATER,
     )
     for status in all_statuses:
         p = _make_post(status=status)

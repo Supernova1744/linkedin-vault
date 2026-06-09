@@ -333,9 +333,7 @@ async def _try_get_text(element: ElementHandle, selectors: list[str]) -> str | N
     return None
 
 
-async def _try_get_attr(
-    element: ElementHandle, selectors: list[str], attr: str
-) -> str | None:
+async def _try_get_attr(element: ElementHandle, selectors: list[str], attr: str) -> str | None:
     """Try each selector in order; return the named attribute of the first match."""
     for sel in selectors:
         try:

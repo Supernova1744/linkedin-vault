@@ -1,3 +1,15 @@
+"""Domain model dataclasses for LinkedIn Vault.
+
+All persistence types used by the application are defined here.  The models
+are plain Python dataclasses (no ORM) so they remain easy to construct,
+test, and serialise without any database dependency.
+
+Post status lifecycle:
+  unread → read          (post has been reviewed)
+  unread → skipped       (post dismissed without reading)
+  unread → saved_later   (flagged for reading later)
+"""
+
 from dataclasses import dataclass, field
 
 POST_STATUS_UNREAD = "unread"
@@ -45,6 +57,7 @@ class SyncState:
     last_scraped_at: str | None
     total_posts_scraped: int
     last_sync_duration_seconds: float | None
+    last_scrape_was_complete: bool = False
 
 
 @dataclass

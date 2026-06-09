@@ -1,3 +1,14 @@
+"""Application configuration via pydantic-settings.
+
+Settings are loaded from two `.env` files in order:
+  1. ``.env`` in the current working directory (project-local overrides)
+  2. ``~/.linkedin-vault/.env`` (user-global settings saved by the TUI wizard)
+
+The second file takes precedence so that settings configured through the TUI
+persist regardless of the working directory.  Values can also be set through
+environment variables using the same names (e.g. ``ZAI_API_KEY=...``).
+"""
+
 from enum import StrEnum
 from pathlib import Path
 
@@ -48,7 +59,7 @@ class Settings(BaseSettings):
 
     # Chat
     chat_provider: LLMProvider | None = None  # falls back to llm_provider
-    chat_model: str = ""                       # falls back to llm_model
+    chat_model: str = ""  # falls back to llm_model
     chat_top_k: int = 8
 
     def get_db_path(self) -> Path:
@@ -69,11 +80,16 @@ def load_settings() -> Settings:
 
 
 def _sanitize_env_value(value: str) -> str:
-    """Strip CR, LF, and NUL — none are valid in a .env value."""
+    """Strip CR, LF, and NUL — none are valid in a .env value.
+
+    Values are written unquoted; pydantic-settings treats everything after
+    the first '=' on a line as the value, so embedded '=' or spaces are safe.
+    """
     return value.replace("\r", "").replace("\n", "").replace("\x00", "")
 
 
 def save_settings_to_file(settings_dict: dict[str, str]) -> None:
+    import contextlib
     import os
     import tempfile
 
@@ -102,8 +118,6 @@ def save_settings_to_file(settings_dict: dict[str, str]) -> None:
             f.write(content)
         os.replace(tmp, env_path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise

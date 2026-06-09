@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 
 MAX_HISTORY_TURNS = 20  # keep last 20 exchange pairs = 40 messages
-MAX_SESSIONS = 500      # evict oldest when exceeded (single-user local tool)
+MAX_SESSIONS = 500  # evict oldest when exceeded (single-user local tool)
 
 
 @dataclass
@@ -44,9 +44,7 @@ class SessionStore:
             return True
         return False
 
-    def add_turn(
-        self, session: ChatSession, user_msg: str, assistant_msg: str
-    ) -> None:
+    def add_turn(self, session: ChatSession, user_msg: str, assistant_msg: str) -> None:
         """Append a user/assistant exchange and trim to MAX_HISTORY_TURNS pairs."""
         session.messages.append({"role": "user", "content": user_msg})
         session.messages.append({"role": "assistant", "content": assistant_msg})

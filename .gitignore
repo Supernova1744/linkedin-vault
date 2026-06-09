@@ -55,3 +55,10 @@ test-results/
 
 # LinkedIn browser session cookies/storage (stored in data_dir — never commit)
 session.json
+
+# Claude Code / RTK local tooling — not part of the project
+.claude/
+.rtk/
+
+# uv cache
+.uv/

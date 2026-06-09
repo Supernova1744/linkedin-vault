@@ -1,3 +1,20 @@
+"""Async SQLite persistence layer for LinkedIn Vault.
+
+All database access goes through :class:`DatabaseManager`.  Each method opens
+and closes its own connection so calls can safely be made from multiple async
+tasks without sharing a connection object.
+
+The schema is managed by ``migrations.sql``.  ``initialize_db`` is idempotent
+and must be called at least once before any other method.
+
+Key design notes:
+- Tags are stored as a JSON array in a TEXT column and decoded on read.
+- Full-text search uses SQLite FTS5 (``posts_fts`` virtual table) kept
+  in sync via database triggers defined in ``migrations.sql``.
+- ``get_posts_filtered`` is the primary read path; it combines FTS5 phrase
+  search, tag/status filtering, sorting, and pagination in a single query.
+"""
+
 import json
 import re
 from datetime import UTC, datetime
@@ -49,6 +66,15 @@ class DatabaseManager:
         async with aiosqlite.connect(self._db_path) as conn:
             await conn.executescript(migration_sql)
             await conn.commit()
+            # Idempotent column addition for existing databases.
+            # ALTER TABLE has no IF NOT EXISTS in SQLite, so we catch the duplicate error.
+            try:
+                await conn.execute(
+                    "ALTER TABLE sync_state ADD COLUMN last_scrape_was_complete INTEGER DEFAULT 0"
+                )
+                await conn.commit()
+            except Exception:
+                pass  # column already present (fresh install or prior migration)
 
     async def upsert_post(self, post: Post) -> int:
         tags_json = json.dumps(post.tags) if post.tags is not None else None
@@ -267,6 +293,7 @@ class DatabaseManager:
             last_scraped_at=d.get("last_scraped_at"),
             total_posts_scraped=d.get("total_posts_scraped", 0),
             last_sync_duration_seconds=d.get("last_sync_duration_seconds"),
+            last_scrape_was_complete=bool(d.get("last_scrape_was_complete", 0)),
         )
 
     async def update_sync_state(
@@ -274,6 +301,7 @@ class DatabaseManager:
         last_scraped_at: str,
         total_posts_scraped: int,
         last_sync_duration_seconds: float,
+        last_scrape_was_complete: bool = False,
     ) -> None:
         async with aiosqlite.connect(self._db_path) as conn:
             await conn.execute(
@@ -281,10 +309,16 @@ class DatabaseManager:
                 UPDATE sync_state SET
                     last_scraped_at = ?,
                     total_posts_scraped = ?,
-                    last_sync_duration_seconds = ?
+                    last_sync_duration_seconds = ?,
+                    last_scrape_was_complete = ?
                 WHERE id = 1
                 """,
-                (last_scraped_at, total_posts_scraped, last_sync_duration_seconds),
+                (
+                    last_scraped_at,
+                    total_posts_scraped,
+                    last_sync_duration_seconds,
+                    int(last_scrape_was_complete),
+                ),
             )
             await conn.commit()
 
@@ -349,9 +383,7 @@ class DatabaseManager:
             clauses.append("p.status = ?")
             params.append(status_filter)
         if tag:
-            clauses.append(
-                "EXISTS (SELECT 1 FROM json_each(p.tags) e WHERE e.value = ?)"
-            )
+            clauses.append("EXISTS (SELECT 1 FROM json_each(p.tags) e WHERE e.value = ?)")
             params.append(tag)
 
         use_fts = bool(query and query.strip())
@@ -376,10 +408,7 @@ class DatabaseManager:
         else:
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             count_sql = f"SELECT COUNT(*) AS cnt FROM posts p {where}"
-            data_sql = (
-                f"SELECT p.* FROM posts p {where} "
-                f"ORDER BY {order_by} LIMIT ? OFFSET ?"
-            )
+            data_sql = f"SELECT p.* FROM posts p {where} ORDER BY {order_by} LIMIT ? OFFSET ?"
             count_params = [*params]
             data_params = [*params, page_size, offset]
 
@@ -393,6 +422,31 @@ class DatabaseManager:
             rows = await data_cursor.fetchall()
 
         return [_row_to_post(row) for row in rows], total
+
+    async def save_chat_turn(self, role: str, content: str) -> None:
+        """Persist a single chat turn and prune the table to the most recent 400 rows."""
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute(
+                "INSERT INTO chat_history (role, content, created_at) VALUES (?, ?, ?)",
+                (role, content, _now_utc()),
+            )
+            await conn.execute(
+                """
+                DELETE FROM chat_history
+                WHERE id NOT IN (
+                    SELECT id FROM chat_history ORDER BY id DESC LIMIT 400
+                )
+                """
+            )
+            await conn.commit()
+
+    async def get_chat_history(self) -> list[dict]:
+        """Return all chat turns in chronological order as ``{"role", "content"}`` dicts."""
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute("SELECT role, content FROM chat_history ORDER BY id ASC")
+            rows = await cursor.fetchall()
+        return [{"role": row["role"], "content": row["content"]} for row in rows]
 
     async def get_all_tags(self) -> list[str]:
         """Return all unique tags across all enriched posts, sorted alphabetically."""

@@ -1,3 +1,10 @@
+"""Pydantic request and response schemas for the LinkedIn Vault dashboard API.
+
+Each class corresponds to either an incoming request body or an outgoing JSON
+response.  FastAPI validates requests against these schemas automatically and
+uses them to generate the OpenAPI spec.
+"""
+
 from typing import Literal
 
 from pydantic import BaseModel, Field
